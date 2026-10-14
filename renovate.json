@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "nix": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 7am on monday"]
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["nix"],
+      "matchPackageNames": ["nixpkgs"],
+      "commitMessageExtra": "({{{newVersion}}})"
+    },
+    {
+      "matchManagers": ["nix"],
+      "matchPackageNames": ["go-overlay"],
+      "commitMessageExtra": "({{{newVersion}}})"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "commitMessagePrefix": "fix(deps):"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "commitMessagePrefix": "build(deps):",
+      "prBodyNotes": [
+        "If CI fails with ``attribute '\"X.Y.Z\"' missing``, the locked `go-overlay` input is older than the pin this PR proposes. Merge the lock-file-maintenance PR first, or run `nix flake update go-overlay` on this branch."
+      ]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The Go release pinned in flake.nix and provided by go-overlay.",
+      "managerFilePatterns": ["/^flake\\.nix$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*goVersion\\s*=\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "versioningTemplate": "semver"
+    }
+  ]
+}

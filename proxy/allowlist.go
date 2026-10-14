@@ -1,0 +1,79 @@
+// Package main implements the claude-microvm egress proxy: the enforcement
+// half of EGRESS_POLICY (the shadow and enforce rungs). It knows nothing
+// about microVMs — a JSON config in, a JSONL audit log out — which is what
+// keeps it extractable to its own repository later (attic/TODO.md Phase 9).
+package main
+
+import (
+	"bufio"
+	"io"
+	"strconv"
+	"strings"
+)
+
+// Allowlist decides which host:port pairs an opaque CONNECT tunnel (or a
+// plain-HTTP forward request) may reach.
+//
+// The file format is the one modules/egress/ and scripts/egress-report.sh
+// already share: one entry per line, '#' starts a comment, an entry matches
+// itself and every subdomain, and a leading "*." is tolerated and ignored.
+// The proxy adds one reading the observe-only modes ignore: an entry may
+// carry an explicit ":port" (e.g. "github.com:22" for git over SSH), and a
+// bare entry grants port 443 only. Ports are capability grants, so they are
+// opt-in per entry rather than global. Entries are domains or IPv4 literals;
+// bracketless IPv6 literals would collide with the port syntax and are not
+// supported.
+type Allowlist struct {
+	ports map[string]map[int]bool
+}
+
+const defaultAllowedPort = 443
+
+func ParseAllowlist(r io.Reader) (*Allowlist, error) {
+	a := &Allowlist{ports: make(map[string]map[int]bool)}
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		line := sc.Text()
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		host, port := line, defaultAllowedPort
+		if i := strings.LastIndexByte(line, ':'); i >= 0 {
+			n, err := strconv.Atoi(line[i+1:])
+			if err != nil || n <= 0 || n >= 65536 {
+				continue // a garbled entry must not widen the list
+			}
+			host, port = line[:i], n
+		}
+		host = normalizeHost(strings.TrimPrefix(host, "*."))
+		if host == "" {
+			continue
+		}
+		if a.ports[host] == nil {
+			a.ports[host] = make(map[int]bool)
+		}
+		a.ports[host][port] = true
+	}
+	return a, sc.Err()
+}
+
+func normalizeHost(h string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+}
+
+// Allowed reports whether host:port may be reached. A pattern matches itself
+// and every subdomain, and the port must have been granted on the matching
+// entry — a port granted to one host widens nothing else.
+func (a *Allowlist) Allowed(host string, port int) bool {
+	host = normalizeHost(host)
+	for pat, ports := range a.ports {
+		if (host == pat || strings.HasSuffix(host, "."+pat)) && ports[port] {
+			return true
+		}
+	}
+	return false
+}

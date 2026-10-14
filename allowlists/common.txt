@@ -1,0 +1,44 @@
+# Development-infrastructure allowlist shared by every flavor.
+#
+# Read by EGRESS_POLICY=alert (and, once the Phase 9 proxy exists, by the
+# enforcing modes — see attic/TODO.md). One domain per line; an entry matches
+# itself and every subdomain. Deliberately generous: the value of an egress
+# policy is in surfacing *unexpected* destinations, and it is barely reduced
+# by permitting the registries every build already touches. A minimal list
+# buys a little more signal and loses all the users to alert fatigue.
+#
+# Registries come in pairs (index + CDN). Miss one half and — under a future
+# enforcing mode — the failure presents as a hang, so keep pairs together.
+
+# --- source hosting ---
+github.com
+github.com:22            # git over SSH — the sealed modes' CONNECT port grant,
+                         # used by the guest's ssh wrapper (bare entries grant
+                         # 443 only; the observe modes ignore the port)
+githubusercontent.com    # raw., objects., codeload. CDNs
+gitlab.com
+sr.ht
+
+# --- package registries and their CDNs ---
+registry.npmjs.org
+pypi.org
+files.pythonhosted.org
+crates.io
+static.crates.io
+proxy.golang.org
+sum.golang.org
+
+# --- Nix ---
+nixos.org                # cache., channels., releases.
+cachix.org               # covers every *.cachix.org project cache
+
+# --- container registries (ENABLE_CRI) ---
+docker.io                # registry-1., auth., index.
+docker.com               # download., production CDN redirects land on cloudflare below
+cloudflare.docker.com
+ghcr.io
+quay.io
+registry.k8s.io
+
+# --- time ---
+pool.ntp.org
