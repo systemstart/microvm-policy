@@ -11,7 +11,7 @@
 
 [changelog]
 header = """
-Egress and filesystem containment for agent microVMs: default-deny egress
+Egress and filesystem containment for microVMs: default-deny egress
 through a credential-holding host proxy, and a workspace the guest cannot
 write through to the host.
 

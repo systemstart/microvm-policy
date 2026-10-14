@@ -50,7 +50,7 @@ func (p *Proxy) log(kind, host string, port int, pathStr, decision string) {
 }
 
 // Rule 2 of the policy track: every denial is loud, actionable, and legible
-// to the agent reading it, not just to the human.
+// to whatever reads it — a person or an agent acting on the error.
 func denyMsg(what, host string) string {
 	return fmt.Sprintf("egress-proxy: %s denied: %s is not in the allowlist — add a line to the allowlist file or EGRESS_ALLOW=%s, or launch with EGRESS_POLICY=open", what, host, host)
 }

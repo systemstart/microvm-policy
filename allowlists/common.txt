@@ -1,5 +1,6 @@
-# Development-infrastructure allowlist shared by every consumer; agent-specific
-# hosts belong in the consumer's own list, concatenated after this one.
+# Development-infrastructure allowlist shared by every consumer;
+# workload-specific hosts belong in the consumer's own list, concatenated
+# after this one.
 #
 # Read by EGRESS_POLICY=alert and by the proxy in the enforcing modes
 # (shadow, enforce). One domain per line; an entry matches

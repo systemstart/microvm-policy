@@ -1,9 +1,9 @@
-# Shared options for the agent-policy layer (egress.nix, workspace.nix, and
+# Shared options for the policy layer (egress.nix, workspace.nix, and
 # the host-side proxy in proxy/). These are the only couplings between the
 # reusable policy layer and the microVM it runs in: the state file the host
-# launcher writes, the workspace mount, the agent's home and user. Defaults
-# match claude-microvm's conventions, so importing the layer there changes
-# nothing; another microvm.nix consumer overrides them to its own layout.
+# launcher writes, the workspace mount, and the home and user the guest
+# workload runs as. Defaults match claude-microvm's conventions; another
+# microvm.nix consumer overrides them to its own layout.
 { lib, ... }:
 {
   options.microvmPolicy = {
@@ -25,12 +25,12 @@
     agentHome = lib.mkOption {
       type = lib.types.str;
       default = "/home/agent";
-      description = "Guest home directory of the agent user.";
+      description = "Guest home directory of the unprivileged workload user.";
     };
     agentUser = lib.mkOption {
       type = lib.types.str;
       default = "agent";
-      description = "Unprivileged user the agent runs as (owns the ephemeral overlay upper).";
+      description = "Unprivileged user the guest workload runs as (owns the ephemeral overlay upper).";
     };
   };
 }

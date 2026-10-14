@@ -1,16 +1,16 @@
 # microvm-policy
 
-Egress and filesystem containment for agent microVMs, as a reusable policy
+Egress and filesystem containment for microVMs, as a reusable policy
 layer. Any [microvm.nix](https://github.com/microvm-nix/microvm.nix) consumer
 can run the same tied-down scheme: default-deny egress through a
 credential-holding host proxy, and a workspace that the guest cannot write
 through to the host.
 
-It knows nothing about any particular agent or VM: a JSON config goes into the
-proxy, a JSONL audit log comes out, and the guest modules take their layout
-from the `microvmPolicy.*` options. The host-side glue — how the VM is
-launched, how the netdev is sealed, which endpoints a given agent needs — stays
-in the consumer.
+It knows nothing about any particular VM or what runs in it: a JSON config
+goes into the proxy, a JSONL audit log comes out, and the guest modules take
+their layout from the `microvmPolicy.*` options. The host-side glue — how the
+VM is launched, how the netdev is sealed, which endpoints a given workload
+needs — stays in the consumer.
 
 ## What's here
 
@@ -32,7 +32,7 @@ in the consumer.
 - **`modules/policy.nix`** — the `microvmPolicy.*` options that decouple the
   modules from any one VM's layout.
 - **`allowlists/common.txt`** — generic development-infrastructure allowlist
-  (registries, caches, source hosting). Agent-specific host lists belong to
+  (registries, caches, source hosting). Workload-specific host lists belong to
   the consumer.
 
 ## Using it

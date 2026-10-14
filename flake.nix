@@ -1,5 +1,5 @@
 {
-  description = "microvm-policy: egress and filesystem containment for agent microVMs";
+  description = "microvm-policy: egress and filesystem containment for microVMs";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -90,7 +90,7 @@
       # uses packages.{egress-proxy,egress-report} in its launcher glue; it
       # sets the microvmPolicy.* options (modules/policy.nix) to its own
       # layout, and computes its allowlist from ./allowlists/common.txt plus
-      # whatever agent-specific hosts it knows.
+      # whatever workload-specific hosts it knows.
       nixosModules = {
         policy = ./modules/policy.nix;
         egress = ./modules/egress.nix;
