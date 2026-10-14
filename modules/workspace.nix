@@ -93,7 +93,7 @@ in
 
     systemd.services.work-ephemeral = {
       description = "Guest-side overlay over the workspace: writes never reach the host";
-      after = [ (mountUnit work) (mountUnit cfg.agentHome) ];
+      after = [ (mountUnit work) ] ++ cfg.stateAfter;
       before = [ "workspace-guard.service" "getty@hvc0.service" ];
       wantedBy = [ "multi-user.target" ];
       # NixOS unit scripts default to coreutils/sed/grep on PATH — mount is
@@ -137,7 +137,7 @@ in
 
     systemd.services.workspace-guard = {
       description = "Read-only binds over workspace paths that execute on the host";
-      after = [ (mountUnit work) (mountUnit cfg.agentHome) "work-ephemeral.service" ];
+      after = [ (mountUnit work) ] ++ cfg.stateAfter ++ [ "work-ephemeral.service" ];
       before = [ "getty@hvc0.service" ];
       wantedBy = [ "multi-user.target" ];
       path = [ pkgs.util-linux ]; # mount — see work-ephemeral

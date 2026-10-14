@@ -1,15 +1,34 @@
 # Guest half of the restricted egress modes (EGRESS_POLICY=shadow|enforce).
-# The host half — restrict=on, the guestfwd hole, the proxy itself — lives in
-# the launcher and proxy/; this module only makes the guest behave well inside
-# a sealed netdev. Everything here is inert under open/monitor/alert: the mode
-# is read from the policy state file at boot.
+# The host half — the seal itself and the proxy — lives outside the guest;
+# this module only makes the guest behave well inside a sealed network.
+# Everything here is inert under open/monitor/alert: the mode is read from
+# the policy state file at boot.
+#
+# The seal is the platform's, and this module does not care which one it is:
+#
+#   - microvm.nix (claude-microvm): QEMU's user-mode netdev with restrict=on
+#     and one guestfwd hole to a host-side proxy; slirp's resolver at
+#     10.0.2.3. These are the defaults.
+#   - a platform that owns the hypervisor (KubeVirt on a pod network): a
+#     default-deny network policy for the VM whose only egress is the proxy's
+#     address; the resolver is whatever DHCP hands out
+#     (`egress.nameservers = null`), and the proxy settings reach the guest's
+#     services and login shells through `egress.proxyEnvironment`, because no
+#     launcher writes them into a session.
 #
 # Part of the microvm-policy layer — see modules/policy.nix for the options
-# that decouple it from any one microVM's layout.
+# that decouple it from any one VM's layout.
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.microvmPolicy;
+  ecfg = cfg.egress;
+  # Reads the proxy address from the state file into $addr; with
+  # egress.proxyAddress set, that is the fallback. (Spliced into the scripts
+  # so that, without a fallback, they are byte-for-byte what they were.)
+  addrLine = "addr=$(${pkgs.gnused}/bin/sed -n 's/^EGRESS_PROXY_ADDR=//p' ${cfg.stateFile} | tail -n1)";
+  addrFallback = lib.optionalString (ecfg.proxyAddress != null)
+    "\n[ -n \"$addr\" ] || addr=${lib.escapeShellArg ecfg.proxyAddress}";
 in
 {
   imports = [ ./policy.nix ];
@@ -40,15 +59,65 @@ in
     };
   };
 
+  options.microvmPolicy.egress = {
+    nameservers = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = [ "10.0.2.3" ];
+      example = null;
+      description = ''
+        The guest's resolver in the open modes, written as a static
+        resolv.conf that DHCP leaves alone (so the seal's emptying of it
+        sticks). The default is slirp's resolver, i.e. what QEMU's user-mode
+        DHCP would hand out. `null` keeps the platform's own (DHCP-supplied)
+        resolver, for networks where the resolver's address is not fixed; the
+        seal still empties resolv.conf.
+      '';
+    };
+    proxyAddress = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "10.96.0.31:3128";
+      description = ''
+        host:port of the egress proxy, used when the state file carries no
+        EGRESS_PROXY_ADDR. null: the state file is the only source (a
+        microvm.nix launcher always writes it).
+      '';
+    };
+    proxyEnvironment = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Under the sealed modes, hand the proxy env file (proxyEnv.file) to
+        every service started after it (systemctl set-environment) and to
+        login shells (sourced from /etc/profile), not only to
+        proxyEnv.services. For platforms where no launcher writes the proxy
+        variables into the session; off by default because a microvm.nix
+        launcher does exactly that itself.
+      '';
+    };
+    noProxy = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "localhost" "127.0.0.1" "::1" ];
+      description = "NO_PROXY entries of the proxy env file; the proxy's own host is appended.";
+    };
+  };
+
   config = lib.mkMerge [ {
     environment.systemPackages = [ pkgs.socat ];
 
     # A static resolv.conf pointing at slirp's resolver — the same resolver
     # DHCP would hand out, so the open modes behave as before. dhcpcd keeps
     # its hands off the file, which is what lets the seal service's emptying
-    # of it stick for the whole session.
-    networking.dhcpcd.extraConfig = "nohook resolv.conf";
-    networking.nameservers = [ "10.0.2.3" ];
+    # of it stick for the whole session. With nameservers = null the platform's
+    # DHCP owns the file; the seal empties it once, at boot.
+    networking.dhcpcd.extraConfig = lib.mkIf (ecfg.nameservers != null) "nohook resolv.conf";
+    networking.nameservers = lib.mkIf (ecfg.nameservers != null) ecfg.nameservers;
+
+    environment.extraInit = lib.mkIf ecfg.proxyEnvironment ''
+      if [ -r ${cfg.proxyEnv.file} ]; then
+        set -a; . ${cfg.proxyEnv.file}; set +a
+      fi
+    '';
 
     # ssh for every host goes through this wrapper, which connects directly in
     # the open modes and speaks HTTP CONNECT to the egress proxy in the sealed
@@ -63,7 +132,7 @@ in
           fi
           case "$policy" in
             shadow|enforce)
-              addr=$(${pkgs.gnused}/bin/sed -n 's/^EGRESS_PROXY_ADDR=//p' ${cfg.stateFile} | tail -n1)
+              ${addrLine}${addrFallback}
               exec ${pkgs.socat}/bin/socat STDIO "PROXY:''${addr%%:*}:$1:$2,proxyport=''${addr##*:}"
               ;;
             *)
@@ -84,7 +153,7 @@ in
 
     systemd.services.egress-seal = {
       description = "Verify the sealed netdev and remove the blackholed resolver";
-      after = [ "network-online.target" "home-agent.mount" ];
+      after = [ "network-online.target" ] ++ cfg.stateAfter;
       wants = [ "network-online.target" ];
       before = [ "getty@hvc0.service" ];
       wantedBy = [ "multi-user.target" ];
@@ -133,13 +202,17 @@ in
     # working. Write the proxy env once at boot, sealed modes only, and hand
     # it to the listed services. Lowercase variants are the ones curl honours
     # for plain http and the ones Nix's fetchers pass through to builds.
+    # With egress.proxyEnvironment the same file also goes to every later
+    # service and to login shells, which must then start after it.
     systemd.services.egress-proxy-env = {
       description = "Proxy env for system services under a sealed egress netdev";
       unitConfig.RequiresMountsFor = [ (dirOf cfg.stateFile) ];
       # Pulled in by, and ordered before, each listed service — not via
       # multi-user.target alone, because socket-activated daemons such as
       # nix-daemon can start before it.
-      before = map (s: "${s}.service") cfg.proxyEnv.services;
+      after = lib.mkIf ecfg.proxyEnvironment cfg.stateAfter;
+      before = map (s: "${s}.service") cfg.proxyEnv.services
+        ++ lib.optional ecfg.proxyEnvironment "systemd-user-sessions.service";
       wantedBy = [ "multi-user.target" ] ++ map (s: "${s}.service") cfg.proxyEnv.services;
       serviceConfig = {
         Type = "oneshot";
@@ -150,8 +223,8 @@ in
         policy="" addr=""
         if [ -f ${cfg.stateFile} ]; then
           policy=$(${pkgs.gnused}/bin/sed -n 's/^EGRESS_POLICY=//p' ${cfg.stateFile} | tail -n1)
-          addr=$(${pkgs.gnused}/bin/sed -n 's/^EGRESS_PROXY_ADDR=//p' ${cfg.stateFile} | tail -n1)
-        fi
+          ${addrLine}
+        fi${addrFallback}
         case "$policy" in shadow|enforce) ;; *) exit 0 ;; esac
         if [ -z "$addr" ]; then
           echo "egress-proxy-env: EGRESS_POLICY=$policy but EGRESS_PROXY_ADDR is unset — not writing ${cfg.proxyEnv.file}" >&2
@@ -164,10 +237,14 @@ in
         HTTPS_PROXY=http://$addr
         http_proxy=http://$addr
         https_proxy=http://$addr
-        NO_PROXY=localhost,127.0.0.1,::1,''${addr%:*}
-        no_proxy=localhost,127.0.0.1,::1,''${addr%:*}
+        NO_PROXY=${lib.concatStringsSep "," ecfg.noProxy},''${addr%:*}
+        no_proxy=${lib.concatStringsSep "," ecfg.noProxy},''${addr%:*}
         EOF
         echo "egress-proxy-env: ${lib.concatStringsSep ", " cfg.proxyEnv.services} will use the egress proxy at $addr"
+      '' + lib.optionalString ecfg.proxyEnvironment ''
+        # One KEY=value per line, no spaces: safe to word-split.
+        ${config.systemd.package}/bin/systemctl set-environment $(cat ${cfg.proxyEnv.file})
+        echo "egress-proxy-env: proxy environment exported to services and login shells (http://$addr)"
       '';
     };
 

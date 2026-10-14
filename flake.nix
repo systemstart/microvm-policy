@@ -144,6 +144,12 @@
             inherit pkgs lib;
             egressProxy = self.packages.${system}.egress-proxy;
           };
+          # The guest module off slirp: pod-network shape (KubeVirt), policy as
+          # instance data, proxy environment exported by the guest itself.
+          guest-pod-network = import ./tests/guest-pod-network.nix {
+            inherit pkgs lib;
+            egressProxy = self.packages.${system}.egress-proxy;
+          };
         });
     };
 }

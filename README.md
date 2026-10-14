@@ -56,6 +56,29 @@ Set `microvmPolicy.stateFile` / `workspaceDir` / `agentHome` / `agentUser` if
 your layout differs from the defaults (`/home/agent/.microvm-env`, `/work`,
 `/home/agent`, `agent`).
 
+### Without QEMU's user-mode netdev (KubeVirt and other platforms)
+
+The defaults describe a microvm.nix guest: the launcher writes the state file
+into a share, seals slirp with `restrict=on` + one `guestfwd`, and slirp's
+resolver is `10.0.2.3`. Where the platform owns the hypervisor — a KubeVirt
+VM on a pod network, say — the seal is a default-deny network policy for the
+VM whose only egress is the proxy, and the guest is told so with:
+
+```nix
+microvmPolicy = {
+  stateFile = "/etc/vdesk/policy.env";     # written by cloud-init write_files
+  stateAfter = [ "cloud-init.service" ];   # order the readers after its writer
+  egress = {
+    nameservers = null;          # keep the platform's DHCP resolver (open modes)
+    proxyAddress = "10.96.0.31:3128"; # fallback if the file has no EGRESS_PROXY_ADDR
+    proxyEnvironment = true;     # export HTTP(S)_PROXY/NO_PROXY under seal
+  };
+};
+```
+
+The state file's keys are the same either way. `tests/guest-pod-network.nix`
+runs this shape, with nftables standing in for the platform's policy.
+
 For a complete consumer, see
 [claude-microvm](https://github.com/systemstart/claude-microvm): its
 `flake.nix` imports the modules, builds the per-agent allowlists on top of
@@ -68,7 +91,9 @@ and `egress-report` on the host.
 summariser against a synthesised capture, and a multi-node `nixosTest`
 (`egress-integration`) that drives the real proxy — reverse-proxy
 strip/inject, path allowlist, `CONNECT` allow/deny with port grants, and
-upstream-proxy chaining — across four VMs.
+upstream-proxy chaining — across four VMs, and one (`guest-pod-network`) that
+runs the guest module without slirp: policy as instance data, the proxy
+environment exported by the guest, direct egress refused.
 
 ## Development
 
