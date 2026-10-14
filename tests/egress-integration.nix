@@ -240,6 +240,12 @@ pkgs.testers.runNixOSTest {
     assert '"path":"/nix-daemon-probe","decision":"allow"' in proxy.succeed("cat /tmp/proxy-audit.jsonl"), \
         "nix-daemon's fetch did not go through the proxy"
 
+    # --- the client's network is open (see its definition), so the seal
+    #     self-test must refuse to call it sealed: before the positive and
+    #     negative controls it printed "verified" here ---
+    client.wait_until_fails("systemctl is-active --quiet egress-seal")
+    client.succeed("test -s /run/egress-seal-failed")
+
     # --- the proxy's own audit log recorded the enforce decisions ---
     proxy_audit = proxy.succeed("cat /tmp/proxy-audit.jsonl")
     assert '"path":"/v1/files","decision":"deny"' in proxy_audit, \
