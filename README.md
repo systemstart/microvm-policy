@@ -1,10 +1,10 @@
 # microvm-policy
 
-Egress and filesystem containment for agent microVMs — the reusable policy
-layer extracted from [claude-microvm](https://github.com/systemstart/claude-microvm).
-Any [microvm.nix](https://github.com/microvm-nix/microvm.nix) consumer can run
-the same tied-down scheme: default-deny egress through a credential-holding
-host proxy, and a workspace that the guest cannot write through to the host.
+Egress and filesystem containment for agent microVMs, as a reusable policy
+layer. Any [microvm.nix](https://github.com/microvm-nix/microvm.nix) consumer
+can run the same tied-down scheme: default-deny egress through a
+credential-holding host proxy, and a workspace that the guest cannot write
+through to the host.
 
 It knows nothing about any particular agent or VM: a JSON config goes into the
 proxy, a JSONL audit log comes out, and the guest modules take their layout
@@ -39,6 +39,7 @@ in the consumer.
 
 ```nix
 {
+  # pin a release: github:systemstart/microvm-policy/vX.Y.Z
   inputs.microvm-policy.url = "github:systemstart/microvm-policy";
   # in a nixosSystem:
   imports = [ microvm-policy.nixosModules.default ];
@@ -52,6 +53,12 @@ in the consumer.
 Set `microvmPolicy.stateFile` / `workspaceDir` / `agentHome` / `agentUser` if
 your layout differs from the defaults (`/home/agent/.microvm-env`, `/work`,
 `/home/agent`, `agent`).
+
+For a complete consumer, see
+[claude-microvm](https://github.com/systemstart/claude-microvm): its
+`flake.nix` imports the modules, builds the per-agent allowlists on top of
+`common.txt`, and its launcher seals the VM's netdev and runs `egress-proxy`
+and `egress-report` on the host.
 
 ## Checks
 
