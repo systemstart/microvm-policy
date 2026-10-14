@@ -56,6 +56,12 @@ jobs:
       - uses: cachix/cachix-action@v17
         with:
           name: systemstart
+          # Pull only. What this job builds is test VMs, NixOS system closures
+          # and test results — nothing a later build fetches — and pushing them
+          # made the post step the longest part of the job. The reusable
+          # outputs (Go toolchain, dev shell, egress-proxy) are pushed by the
+          # lint and test jobs.
+          skipPush: true
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           signingKey: ${{ secrets.CACHIX_SIGNING_KEY }}
       - run: nix flake check -L
