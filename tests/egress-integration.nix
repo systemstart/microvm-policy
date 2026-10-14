@@ -122,7 +122,54 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
-    start_all()
+    import os, threading, time
+
+    # start_all() with a deadline per VM. On GitHub's runners one of the four
+    # VMs intermittently never reaches "QEMU running": its process stays
+    # alive without connecting to the driver, and the driver waits on that
+    # with no timeout of its own. Here a VM that misses the deadline gets its
+    # process tree dumped (for diagnosis) and is killed, which makes the
+    # driver's wait raise and end, then it is started again.
+    def dump_vm_processes(label):
+        print(f"--- {label}: qemu/virtiofsd/run-vm processes ---", flush=True)
+        for pid in filter(str.isdigit, os.listdir("/proc")):
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmd = f.read().replace(b"\0", b" ").decode(errors="replace")
+                if not any(k in cmd for k in ("qemu", "virtiofsd", "-vm")):
+                    continue
+                with open(f"/proc/{pid}/status") as f:
+                    state = next(l.split(None, 1)[1].strip() for l in f if l.startswith("State:"))
+                with open(f"/proc/{pid}/wchan") as f:
+                    wchan = f.read().strip()
+                print(f"  {pid} [{state}] wchan={wchan} {cmd[:240]}", flush=True)
+            except (OSError, StopIteration):
+                pass
+
+    def start_with_deadline(machines, deadline_s=120, attempts=3):
+        pending = list(machines)
+        for attempt in range(1, attempts + 1):
+            threads = {m: threading.Thread(target=m.start, name=f"start-{m.name}", daemon=True)
+                       for m in pending}
+            for t in threads.values():
+                t.start()
+            end = time.monotonic() + deadline_s
+            for t in threads.values():
+                t.join(max(0.0, end - time.monotonic()))
+            stuck = [m for m, t in threads.items() if t.is_alive() or not m.booted]
+            if not stuck:
+                return
+            names = ", ".join(m.name for m in stuck)
+            print(f"!!! attempt {attempt}: {names} did not start within {deadline_s}s", flush=True)
+            dump_vm_processes(f"attempt {attempt}")
+            for m in stuck:
+                if m.process is not None and m.process.poll() is None:
+                    m.process.kill()
+                threads[m].join(30)
+            pending = stuck
+        raise Exception(f"VMs did not start after {attempts} attempts: {names}")
+
+    start_with_deadline([upstream, corp, proxy, client])
     upstream.wait_for_unit("echo.service")
     upstream.wait_for_open_port(80)
     corp.wait_for_unit("corp.service")
