@@ -14,6 +14,10 @@
 # Asserted:
 #   - egress-seal reads the policy written by the instance-data unit (ordered
 #     after it via stateAfter), verifies the seal and empties resolv.conf;
+#     its positive control reached the proxy (audit: egress-seal.invalid);
+#   - the seal self-test FAILS the unit on an unsealed guest (node
+#     `unsealed`: same config, no nftables) and is INCONCLUSIVE — also a
+#     failed unit — when the proxy does not answer (node `noproxy`);
 #   - with no EGRESS_PROXY_ADDR in that file, egress.proxyAddress is the
 #     fallback, and proxyEnvironment exports HTTP(S)_PROXY/NO_PROXY to the
 #     manager environment (a later service) and to login shells;
@@ -33,6 +37,61 @@ let
     endpoints = [ ];
   });
   page = pkgs.writeTextDir "index.html" "upstream-ok\n";
+
+  # sealed = false: the same guest without the network policy (the launcher
+  # bug the self-test exists for). proxyPort: where the guest is told the
+  # proxy is (3999: nothing listens).
+  mkGuest = { sealed ? true, proxyPort ? 3128 }: { nodes, ... }:
+    let
+      proxyIP = nodes.proxy.networking.primaryIPAddress;
+      upstreamIP = nodes.upstream.networking.primaryIPAddress;
+    in
+    {
+      imports = [ ../modules/egress.nix ];
+      microvmPolicy = {
+        stateFile = "/etc/microvm-policy/state.env";
+        stateAfter = [ "instance-data.service" ];
+        egress = {
+          nameservers = null;
+          proxyAddress = "${proxyIP}:${toString proxyPort}";
+          proxyEnvironment = true;
+          sealProxyWait = 5;
+        };
+      };
+
+      # Stand-in for cloud-init's write_files: the platform's instance data,
+      # written by root at boot. No EGRESS_PROXY_ADDR, so the fallback counts.
+      # The seal probe is the upstream's web port: reachable unless sealed.
+      systemd.services.instance-data = {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };
+        script = ''
+          install -d -m 0755 /etc/microvm-policy
+          printf 'EGRESS_POLICY=enforce\nEGRESS_SEAL_PROBE=${upstreamIP}:80\n' > /etc/microvm-policy/state.env
+        '';
+      };
+
+      users.users.agent = { isNormalUser = true; };
+      environment.systemPackages = [ pkgs.curl ];
+      # The platform resolver (DHCP on a pod network); the seal must empty it.
+      networking.nameservers = [ proxyIP ];
+
+      # The pod's network policy: only the proxy, and replies.
+      networking.nftables.enable = sealed;
+      networking.nftables.tables = lib.mkIf sealed {
+        podpolicy = {
+          family = "inet";
+          content = ''
+            chain output {
+              type filter hook output priority 0; policy drop;
+              oif "lo" accept
+              ct state established,related accept
+              ip daddr ${proxyIP} tcp dport 3128 accept
+            }
+          '';
+        };
+      };
+    };
 in
 pkgs.testers.runNixOSTest {
   name = "guest-pod-network";
@@ -60,52 +119,9 @@ pkgs.testers.runNixOSTest {
       };
     };
 
-    guest = { nodes, ... }:
-      let
-        proxyIP = nodes.proxy.networking.primaryIPAddress;
-      in
-      {
-        imports = [ ../modules/egress.nix ];
-        microvmPolicy = {
-          stateFile = "/etc/microvm-policy/state.env";
-          stateAfter = [ "instance-data.service" ];
-          egress = {
-            nameservers = null;
-            proxyAddress = "${proxyIP}:3128";
-            proxyEnvironment = true;
-          };
-        };
-
-        # Stand-in for cloud-init's write_files: the platform's instance data,
-        # written by root at boot. No EGRESS_PROXY_ADDR, so the fallback counts.
-        systemd.services.instance-data = {
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };
-          script = ''
-            install -d -m 0755 /etc/microvm-policy
-            echo EGRESS_POLICY=enforce > /etc/microvm-policy/state.env
-          '';
-        };
-
-        users.users.agent = { isNormalUser = true; };
-        environment.systemPackages = [ pkgs.curl ];
-        # The platform resolver (DHCP on a pod network); the seal must empty it.
-        networking.nameservers = [ proxyIP ];
-
-        # The pod's network policy: only the proxy, and replies.
-        networking.nftables.enable = true;
-        networking.nftables.tables.podpolicy = {
-          family = "inet";
-          content = ''
-            chain output {
-              type filter hook output priority 0; policy drop;
-              oif "lo" accept
-              ct state established,related accept
-              ip daddr ${proxyIP} tcp dport 3128 accept
-            }
-          '';
-        };
-      };
+    guest = mkGuest { };
+    unsealed = mkGuest { sealed = false; };
+    noproxy = mkGuest { proxyPort = 3999; };
   };
 
   testScript = { nodes, ... }:
@@ -119,10 +135,26 @@ pkgs.testers.runNixOSTest {
       proxy.wait_for_open_port(3128)
       guest.wait_for_unit("egress-seal.service")
 
+      with subtest("unsealed guest: the self-test FAILS the unit"):
+          unsealed.wait_until_succeeds("systemctl is-failed egress-seal.service", timeout=120)
+          marker = unsealed.succeed("cat /run/egress-seal-failed")
+          print(marker)
+          assert "egress-seal: FAILED" in marker, marker
+          assert "${nodes.upstream.networking.primaryIPAddress}:80 succeeded" in marker, marker
+
+      with subtest("proxy does not answer: INCONCLUSIVE, the unit fails"):
+          noproxy.wait_until_succeeds("systemctl is-failed egress-seal.service", timeout=120)
+          marker = noproxy.succeed("cat /run/egress-seal-failed")
+          print(marker)
+          assert "egress-seal: INCONCLUSIVE" in marker and "did not answer" in marker, marker
+
       with subtest("the seal reads the instance data and verifies"):
           seal = guest.succeed("journalctl -b -u egress-seal --no-pager")
           print(seal)
           assert "egress-seal: verified" in seal, "seal not verified"
+          guest.succeed("systemctl is-active egress-seal.service")
+          audit = proxy.succeed("cat /tmp/audit.jsonl")
+          assert '"host":"egress-seal.invalid"' in audit, "the positive control never reached the proxy"
           guest.fail("test -e /run/egress-seal-failed")
           guest.succeed("test ! -s /etc/resolv.conf")
           guest.wait_for_unit("egress-proxy-env.service")

@@ -72,11 +72,18 @@ microvmPolicy = {
     nameservers = null;          # keep the platform's DHCP resolver (open modes)
     proxyAddress = "10.96.0.31:3128"; # fallback if the file has no EGRESS_PROXY_ADDR
     proxyEnvironment = true;     # export HTTP(S)_PROXY/NO_PROXY under seal
+    # The seal self-test's negative control: reachable without the seal.
+    sealProbes = [ "10.96.0.1:443" "10.96.0.10:53" ]; # API server, DNS
   };
 };
 ```
 
-The state file's keys are the same either way. `tests/guest-pod-network.nix`
+The state file's keys are the same either way. The boot-time seal self-test needs
+two controls: the proxy must answer (positive), and every seal probe — an
+address reachable only while the seal is absent, from `sealProbes` or
+`EGRESS_SEAL_PROBE` in the state file — must be refused (negative). A failed
+or inconclusive test fails `egress-seal.service` and leaves
+`/run/egress-seal-failed`. `tests/guest-pod-network.nix`
 runs this shape, with nftables standing in for the platform's policy.
 
 For a complete consumer, see

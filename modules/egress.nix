@@ -95,6 +95,27 @@ in
         launcher does exactly that itself.
       '';
     };
+    sealProbes = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "10.96.0.1:443" "10.96.0.10:53" ];
+      description = ''
+        host:port addresses that are reachable when the seal is ABSENT and
+        must be refused when it is present: the negative control of the
+        boot-time seal self-test, added to EGRESS_SEAL_PROBE from the state
+        file (comma-separated). Pick addresses that are always up and that
+        only the seal blocks: on microvm.nix, the host side of the proxy
+        (10.0.2.2:<the proxy's host port>, which the launcher knows); on a pod
+        network, cluster services every pod may reach unless the VM's policy
+        denies them (the API server's and the DNS service's ClusterIPs). No
+        probe at all makes the self-test inconclusive, which fails it.
+      '';
+    };
+    sealProxyWait = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 10;
+      description = "Seconds the seal self-test waits for the proxy to answer (its positive control) before it fails as inconclusive.";
+    };
     noProxy = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "localhost" "127.0.0.1" "::1" ];
@@ -177,21 +198,60 @@ in
 
         # Boot-time seal self-test (Anthropic's containment lesson: their
         # breaches happened in environments *believed* sealed and never
-        # verified). Direct TCP must be refused by slirp immediately; a
-        # connect that succeeds means the netdev is not restricted at all.
-        if timeout 3 ${pkgs.bash}/bin/bash -c 'echo > /dev/tcp/1.1.1.1/443' 2>/dev/null; then
+        # verified). A refused connection proves nothing on its own — an
+        # offline host refuses too, and that is how v0.1.0 reported an
+        # UNSEALED guest as "verified". So the test needs both controls:
+        #
+        #   1. positive: the proxy answers an HTTP CONNECT with a status line
+        #      (it refuses the probe name; any HTTP answer will do). If it
+        #      does not, nothing can be concluded: the network may be dead.
+        #   2. negative: every seal probe — an address that IS reachable when
+        #      the seal is absent (EGRESS_SEAL_PROBE in the state file, plus
+        #      egress.sealProbes) — must NOT connect. With no probe declared,
+        #      the test is inconclusive. 1.1.1.1:443 is tried as well, as an
+        #      extra tripwire only: its failure proves nothing.
+        #
+        # Any failure or inconclusive result FAILS this unit (exit 1) and
+        # leaves /run/egress-seal-failed with the reason: the consumer's loud
+        # stop (claude-microvm's login shell, vdesk's Lumen) keys off either.
+        rm -f /run/egress-seal-failed
+        seal_fail() {
           {
-            echo "egress-seal: FAILED under EGRESS_POLICY=$policy — direct egress to"
-            echo "1.1.1.1:443 succeeded, so the netdev is NOT restricted. The session is"
-            echo "running with today's open networking while claiming to be sealed."
+            echo "egress-seal: $1 under EGRESS_POLICY=$policy."
+            echo "$2"
           } > /run/egress-seal-failed
           cat /run/egress-seal-failed >&2
-          # Recorded, not a boot failure: the login shell refuses to start the
-          # agent on this flag, which is the loud stop — bricking the boot
-          # would hide the message.
-          exit 0
-        fi
-        echo "egress-seal: verified — direct egress blocked, traffic goes via the proxy"
+          exit 1
+        }
+        ${addrLine}${addrFallback}
+        [ -n "$addr" ] || seal_fail "INCONCLUSIVE" \
+          "No proxy address (EGRESS_PROXY_ADDR / microvmPolicy.egress.proxyAddress): nothing to test against."
+        proxy_answers() {
+          timeout 3 ${pkgs.bash}/bin/bash -c '
+            exec 3<>"/dev/tcp/$1/$2" || exit 1
+            printf "CONNECT egress-seal.invalid:9 HTTP/1.1\r\nHost: egress-seal.invalid:9\r\n\r\n" >&3
+            IFS= read -r line <&3 && case "$line" in "HTTP/1."[01]" "*) exit 0 ;; esac
+            exit 1' _ "''${addr%:*}" "''${addr##*:}" 2>/dev/null
+        }
+        answered=
+        for _ in $(seq 1 ${toString ecfg.sealProxyWait}); do
+          if proxy_answers; then answered=1; break; fi
+          sleep 1
+        done
+        [ -n "$answered" ] || seal_fail "INCONCLUSIVE" \
+          "The proxy at $addr did not answer within ${toString ecfg.sealProxyWait}s: a sealed network cannot be told from a dead one."
+        probes=$(${pkgs.gnused}/bin/sed -n 's/^EGRESS_SEAL_PROBE=//p' ${cfg.stateFile} | tail -n1)
+        probes="$probes ${lib.concatStringsSep " " ecfg.sealProbes}"
+        probes=$(echo "$probes" | tr ', ' '\n\n' | ${pkgs.gnused}/bin/sed '/^$/d')
+        [ -n "$probes" ] || seal_fail "INCONCLUSIVE" \
+          "No seal probe (EGRESS_SEAL_PROBE in ${cfg.stateFile}, or microvmPolicy.egress.sealProbes): no address that the seal must block was named."
+        for p in $probes 1.1.1.1:443; do
+          if timeout 3 ${pkgs.bash}/bin/bash -c 'echo > "/dev/tcp/$1/$2"' _ "''${p%:*}" "''${p##*:}" 2>/dev/null; then
+            seal_fail "FAILED" \
+              "A direct connection to $p succeeded, so the network is NOT sealed. The session would run with open networking while claiming to be sealed."
+          fi
+        done
+        echo "egress-seal: verified — the proxy at $addr answers, direct connections to $(echo $probes | tr '\n' ' ')are blocked"
       '';
     };
 
