@@ -1,7 +1,7 @@
-// Package main implements the claude-microvm egress proxy: the enforcement
+// Package main implements the microvm-policy egress proxy: the enforcement
 // half of EGRESS_POLICY (the shadow and enforce rungs). It knows nothing
-// about microVMs — a JSON config in, a JSONL audit log out — which is what
-// keeps it extractable to its own repository later (attic/TODO.md Phase 9).
+// about microVMs — a JSON config in, a JSONL audit log out — so any
+// consumer's launcher can drive it.
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 // Allowlist decides which host:port pairs an opaque CONNECT tunnel (or a
 // plain-HTTP forward request) may reach.
 //
-// The file format is the one modules/egress/ and scripts/egress-report.sh
+// The file format is the one allowlists/ and egress-report.sh
 // already share: one entry per line, '#' starts a comment, an entry matches
 // itself and every subdomain, and a leading "*." is tolerated and ignored.
 // The proxy adds one reading the observe-only modes ignore: an entry may

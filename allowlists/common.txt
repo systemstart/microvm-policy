@@ -1,7 +1,8 @@
-# Development-infrastructure allowlist shared by every flavor.
+# Development-infrastructure allowlist shared by every consumer; agent-specific
+# hosts belong in the consumer's own list, concatenated after this one.
 #
-# Read by EGRESS_POLICY=alert (and, once the Phase 9 proxy exists, by the
-# enforcing modes — see attic/TODO.md). One domain per line; an entry matches
+# Read by EGRESS_POLICY=alert and by the proxy in the enforcing modes
+# (shadow, enforce). One domain per line; an entry matches
 # itself and every subdomain. Deliberately generous: the value of an egress
 # policy is in surfacing *unexpected* destinations, and it is barely reduced
 # by permitting the registries every build already touches. A minimal list

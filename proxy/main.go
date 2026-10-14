@@ -23,7 +23,7 @@ type Config struct {
 	// audit it as would_deny — the shadow rung of the policy ladder).
 	Mode string `json:"mode"`
 	// AllowlistFile holds CONNECT host[:port] patterns, in the same file
-	// format as modules/egress/.
+	// format as allowlists/.
 	AllowlistFile string `json:"allowlistFile"`
 	// AuditLog is the JSONL decision log path; empty logs to stderr.
 	AuditLog string `json:"auditLog"`
@@ -38,7 +38,7 @@ type Config struct {
 // Endpoint is one reverse-proxied API. The guest's BASE_URL points at Prefix
 // on this proxy; the proxy originates genuine TLS to Upstream and validates
 // the real certificate — no CA in the guest trust store, no interception
-// anywhere (the design note in attic/TODO.md Phase 9).
+// anywhere.
 type Endpoint struct {
 	// Prefix is the path the guest is configured with, e.g. "/anthropic".
 	Prefix string `json:"prefix"`

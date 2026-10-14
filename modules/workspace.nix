@@ -6,15 +6,14 @@
 # sandboxed session that can write these persists code past the VM teardown.
 #
 # Straight denial breaks a workflow this project actively uses — asking the
-# agent to write a project skill or register an MCP server (see
-# attic/NEW-DOGS-AND-SKILLS.md) — so per the track's guiding constraint the
+# agent to write a project skill or register an MCP server — so the
 # guard is opt-in (WORKSPACE_GUARD=1) until it has lived a release under real
 # use. It covers paths that exist at boot: it cannot make a file that is not
 # there yet read-only, so a repo without .mcp.json is not protected against
 # one being created. Defence in depth, not a boundary — the session contract
 # says which state a run has.
 #
-# The same module carries WORKSPACE_MODE=ephemeral (Phase 11): the workspace
+# The same module carries WORKSPACE_MODE=ephemeral: the workspace
 # becomes a guest-side overlay whose writes never reach the host — the
 # complement of the guard. Passthrough stays the default: instant host-visible
 # edits are the current contract and most of the point of virtiofs.

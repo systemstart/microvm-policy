@@ -4,10 +4,6 @@
 # launcher writes, the workspace mount, the agent's home and user. Defaults
 # match claude-microvm's conventions, so importing the layer there changes
 # nothing; another microvm.nix consumer overrides them to its own layout.
-#
-# This is the seam the layer is extracted along (attic/TODO.md Phase 9): with
-# these in place the split to a standalone repo is `git mv` plus one flake
-# input, no code change.
 { lib, ... }:
 {
   options.microvmPolicy = {

@@ -1,4 +1,4 @@
-# Drives egress-report (scripts/egress-report.sh, packaged in flake.nix)
+# Drives egress-report (egress-report.sh, packaged in flake.nix)
 # against a synthesized capture: DNS query/answer, a TLS ClientHello with
 # SNI, and raw TCP/UDP flows with no hostname. Covers the summarize
 # sections, allowlist matching (subdomain + "*." and ":port" tolerance,

@@ -63,6 +63,5 @@ upstream-proxy chaining — across four VMs.
 
 ## Design
 
-The rationale, threat model, and the lessons folded in (including Anthropic's
-own containment-failure disclosure) live in `claude-microvm`'s `attic/TODO.md`,
-Phase 9.
+The rationale for each mechanism is in the header comment of the file that
+implements it (`modules/*.nix`, `proxy/*.go`).
