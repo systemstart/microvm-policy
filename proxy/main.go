@@ -62,9 +62,17 @@ type Endpoint struct {
 	key         string
 }
 
+// version is stamped at build time from ./VERSION (-X main.version=…).
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "", "path to the JSON config")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("egress-proxy", version)
+		return
+	}
 	if *configPath == "" {
 		fmt.Fprintln(os.Stderr, "egress-proxy: -config is required")
 		os.Exit(64)
