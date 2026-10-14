@@ -24,8 +24,10 @@ needs — stays in the consumer.
 - **`egress-report.sh`** — host-side pcap summariser and live allowlist
   matcher, for observe-only monitoring (`packages.egress-report`).
 - **`modules/egress.nix`** — guest module for the sealed modes: static
-  resolver emptied under seal, a boot-time seal self-test, and ssh routed
-  through the proxy.
+  resolver emptied under seal, a boot-time seal self-test, ssh routed
+  through the proxy, and the proxy env handed to system services that need
+  the network (`microvmPolicy.proxyEnv.services`, default `nix-daemon`, so
+  substitutes and fixed-output fetches work while sealed).
 - **`modules/workspace.nix`** — the workspace write-guard (read-only binds
   over host-executing config paths) and ephemeral overlay mode, plus
   `vm-work-diff`.

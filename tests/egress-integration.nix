@@ -105,7 +105,17 @@ pkgs.testers.runNixOSTest {
         };
     };
 
+    # Also a guest of the layer, as the launcher would leave it in enforce
+    # mode: the state file names the proxy, so egress-proxy-env must hand it
+    # to nix-daemon. The test network is not actually sealed, so the proof
+    # that the daemon used the proxy is the proxy's own audit log.
     client = { ... }: {
+      imports = [ ../modules/egress.nix ];
+      microvmPolicy.stateFile = "/etc/microvm-policy-test.env";
+      environment.etc."microvm-policy-test.env".text = ''
+        EGRESS_POLICY=enforce
+        EGRESS_PROXY_ADDR=proxy:3128
+      '';
       networking.firewall.enable = false;
       environment.systemPackages = [ pkgs.curl ];
     };
@@ -165,6 +175,23 @@ pkgs.testers.runNixOSTest {
         f"reverse-proxy leg did not chain through corp: {corp_audit!r}"
     assert '"kind":"connect"' in corp_audit and '"port":80' in corp_audit, \
         f"CONNECT leg did not chain through corp: {corp_audit!r}"
+
+    # --- nix-daemon goes through the proxy in the sealed modes: a fixed-output
+    #     fetch runs inside the daemon, so it only reaches upstream via the
+    #     proxy if egress-proxy-env handed the daemon its env ---
+    client.succeed("grep -qx 'https_proxy=http://proxy:3128' /run/microvm-policy/proxy.env")
+    client.succeed(
+        # Root would otherwise use the store directly, not the daemon.
+        "NIX_REMOTE=daemon nix-build --no-out-link -E 'import <nix/fetchurl.nix> { "
+        "url = \"http://upstream/nix-daemon-probe\"; "
+        "sha256 = \"2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\"; }'"
+    )
+    client.succeed(
+        "tr '\\0' '\\n' < /proc/$(systemctl show -p MainPID --value nix-daemon)/environ"
+        " | grep -qx 'http_proxy=http://proxy:3128'"
+    )
+    assert '"path":"/nix-daemon-probe","decision":"allow"' in proxy.succeed("cat /tmp/proxy-audit.jsonl"), \
+        "nix-daemon's fetch did not go through the proxy"
 
     # --- the proxy's own audit log recorded the enforce decisions ---
     proxy_audit = proxy.succeed("cat /tmp/proxy-audit.jsonl")

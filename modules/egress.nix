@@ -14,7 +14,33 @@ in
 {
   imports = [ ./policy.nix ];
 
-  config = {
+  options.microvmPolicy.proxyEnv = {
+    file = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/microvm-policy/proxy.env";
+      description = ''
+        Environment file carrying HTTP(S)_PROXY / NO_PROXY for the egress
+        proxy, written at boot in the sealed modes only (absent otherwise).
+        System services that should reach the network through the proxy read
+        it with `EnvironmentFile=-<file>`; `services` wires that up.
+      '';
+    };
+    services = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "nix-daemon" ];
+      example = [ "nix-daemon" "docker" "containerd" ];
+      description = ''
+        systemd services (without `.service`) that get the proxy env file.
+        System services inherit neither the workload's proxy variables nor
+        any global ones, so under a sealed netdev they have no route out
+        unless listed here. nix-daemon is the default because, with
+        `NIX_REMOTE=daemon`, it performs every substitute download and every
+        fixed-output fetch.
+      '';
+    };
+  };
+
+  config = lib.mkMerge [ {
     environment.systemPackages = [ pkgs.socat ];
 
     # A static resolv.conf pointing at slirp's resolver — the same resolver
@@ -99,5 +125,55 @@ in
         echo "egress-seal: verified — direct egress blocked, traffic goes via the proxy"
       '';
     };
-  };
+
+    # The workload gets its proxy variables from the state file; system
+    # services get nothing, so under a sealed netdev they have no route out.
+    # For nix-daemon that silently breaks every substitute download and
+    # fixed-output fetch while `nix` itself (client-side flake fetches) keeps
+    # working. Write the proxy env once at boot, sealed modes only, and hand
+    # it to the listed services. Lowercase variants are the ones curl honours
+    # for plain http and the ones Nix's fetchers pass through to builds.
+    systemd.services.egress-proxy-env = {
+      description = "Proxy env for system services under a sealed egress netdev";
+      unitConfig.RequiresMountsFor = [ (dirOf cfg.stateFile) ];
+      # Pulled in by, and ordered before, each listed service — not via
+      # multi-user.target alone, because socket-activated daemons such as
+      # nix-daemon can start before it.
+      before = map (s: "${s}.service") cfg.proxyEnv.services;
+      wantedBy = [ "multi-user.target" ] ++ map (s: "${s}.service") cfg.proxyEnv.services;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        rm -f ${cfg.proxyEnv.file}
+        policy="" addr=""
+        if [ -f ${cfg.stateFile} ]; then
+          policy=$(${pkgs.gnused}/bin/sed -n 's/^EGRESS_POLICY=//p' ${cfg.stateFile} | tail -n1)
+          addr=$(${pkgs.gnused}/bin/sed -n 's/^EGRESS_PROXY_ADDR=//p' ${cfg.stateFile} | tail -n1)
+        fi
+        case "$policy" in shadow|enforce) ;; *) exit 0 ;; esac
+        if [ -z "$addr" ]; then
+          echo "egress-proxy-env: EGRESS_POLICY=$policy but EGRESS_PROXY_ADDR is unset — not writing ${cfg.proxyEnv.file}" >&2
+          exit 0
+        fi
+        mkdir -p "$(dirname ${cfg.proxyEnv.file})"
+        umask 022
+        cat > ${cfg.proxyEnv.file} <<EOF
+        HTTP_PROXY=http://$addr
+        HTTPS_PROXY=http://$addr
+        http_proxy=http://$addr
+        https_proxy=http://$addr
+        NO_PROXY=localhost,127.0.0.1,::1,''${addr%:*}
+        no_proxy=localhost,127.0.0.1,::1,''${addr%:*}
+        EOF
+        echo "egress-proxy-env: ${lib.concatStringsSep ", " cfg.proxyEnv.services} will use the egress proxy at $addr"
+      '';
+    };
+
+  } {
+    systemd.services = lib.genAttrs cfg.proxyEnv.services (_: {
+      serviceConfig.EnvironmentFile = [ "-${cfg.proxyEnv.file}" ];
+    });
+  } ];
 }
