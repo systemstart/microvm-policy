@@ -6,6 +6,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -37,20 +38,8 @@ func ParseAllowlist(r io.Reader) (*Allowlist, error) {
 		if i := strings.IndexByte(line, '#'); i >= 0 {
 			line = line[:i]
 		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		host, port := line, defaultAllowedPort
-		if i := strings.LastIndexByte(line, ':'); i >= 0 {
-			n, err := strconv.Atoi(line[i+1:])
-			if err != nil || n <= 0 || n >= 65536 {
-				continue // a garbled entry must not widen the list
-			}
-			host, port = line[:i], n
-		}
-		host = normalizeHost(strings.TrimPrefix(host, "*."))
-		if host == "" {
+		host, port, ok := parseEntry(line)
+		if !ok {
 			continue
 		}
 		if a.ports[host] == nil {
@@ -58,7 +47,29 @@ func ParseAllowlist(r io.Reader) (*Allowlist, error) {
 		}
 		a.ports[host][port] = true
 	}
-	return a, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read: %w", err)
+	}
+	return a, nil
+}
+
+// parseEntry reads one comment-stripped line. ok is false for blank lines and
+// for entries that cannot be parsed: a garbled entry must not widen the list.
+func parseEntry(line string) (host string, port int, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", 0, false
+	}
+	host, port = line, defaultAllowedPort
+	if i := strings.LastIndexByte(line, ':'); i >= 0 {
+		n, err := strconv.Atoi(line[i+1:])
+		if err != nil || n <= 0 || n >= 65536 {
+			return "", 0, false
+		}
+		host, port = line[:i], n
+	}
+	host = normalizeHost(strings.TrimPrefix(host, "*."))
+	return host, port, host != ""
 }
 
 func normalizeHost(h string) string {

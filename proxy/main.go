@@ -96,31 +96,13 @@ func main() {
 }
 
 func load(path string) (*Proxy, *Config, error) {
-	raw, err := os.ReadFile(path)
+	cfg, err := readConfig(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	var cfg Config
-	dec := json.NewDecoder(strings.NewReader(string(raw)))
-	dec.DisallowUnknownFields() // a typoed field must not silently no-op
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if cfg.Mode != "enforce" && cfg.Mode != "log" {
-		return nil, nil, fmt.Errorf("%s: mode must be \"enforce\" or \"log\", got %q", path, cfg.Mode)
-	}
-	if cfg.Listen == "" {
-		cfg.Listen = "127.0.0.1:0"
-	}
-
-	f, err := os.Open(cfg.AllowlistFile)
+	allow, err := loadAllowlist(cfg.AllowlistFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("allowlist: %w", err)
-	}
-	defer f.Close()
-	allow, err := ParseAllowlist(f)
-	if err != nil {
-		return nil, nil, fmt.Errorf("allowlist %s: %w", cfg.AllowlistFile, err)
+		return nil, nil, err
 	}
 
 	endpoints := make([]*Endpoint, 0, len(cfg.Endpoints))
@@ -132,34 +114,77 @@ func load(path string) (*Proxy, *Config, error) {
 		endpoints = append(endpoints, ep)
 	}
 
-	auditW := os.Stderr
-	if cfg.AuditLog != "" {
-		auditW, err = os.OpenFile(cfg.AuditLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return nil, nil, fmt.Errorf("audit log: %w", err)
-		}
+	auditW, err := openAuditLog(cfg.AuditLog)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	p := &Proxy{
-		mode:      cfg.Mode,
-		allow:     allow,
-		endpoints: endpoints,
-		audit:     slog.New(slog.NewJSONHandler(auditW, nil)),
-		transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+		mode:          cfg.Mode,
+		allow:         allow,
+		endpoints:     endpoints,
+		audit:         slog.New(slog.NewJSONHandler(auditW, nil)),
+		transport:     &http.Transport{Proxy: http.ProxyFromEnvironment},
+		upstreamProxy: http.ProxyFromEnvironment,
 	}
-	return p, &cfg, nil
+	return p, cfg, nil
+}
+
+func readConfig(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	var cfg Config
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields() // a typoed field must not silently no-op
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if cfg.Mode != "enforce" && cfg.Mode != "log" {
+		return nil, fmt.Errorf("%s: mode must be \"enforce\" or \"log\", got %q", path, cfg.Mode)
+	}
+	if cfg.Listen == "" {
+		cfg.Listen = "127.0.0.1:0"
+	}
+	return &cfg, nil
+}
+
+func loadAllowlist(path string) (*Allowlist, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("allowlist: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	allow, err := ParseAllowlist(f)
+	if err != nil {
+		return nil, fmt.Errorf("allowlist %s: %w", path, err)
+	}
+	return allow, nil
+}
+
+// openAuditLog returns stderr when no path is configured.
+func openAuditLog(path string) (*os.File, error) {
+	if path == "" {
+		return os.Stderr, nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("audit log: %w", err)
+	}
+	return f, nil
 }
 
 func (ep *Endpoint) init() error {
 	if !strings.HasPrefix(ep.Prefix, "/") || ep.Prefix == "/" {
 		return fmt.Errorf("prefix must start with / and not be the root")
 	}
-	u, err := url.Parse(ep.Upstream)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" {
+	u, ok := parseOrigin(ep.Upstream)
+	if !ok {
 		return fmt.Errorf("upstream must be an origin like https://api.example.com, got %q", ep.Upstream)
 	}
 	ep.upstreamURL = u
-	if ep.Header == "" || strings.ContainsAny(ep.Header, " :") || ep.Header != strings.ToLower(ep.Header) {
+	if !isLowerHeaderName(ep.Header) {
 		return fmt.Errorf("header must be a lowercase header name like \"x-api-key\" or \"authorization\", got %q", ep.Header)
 	}
 	if len(ep.AllowedPaths) == 0 {
@@ -174,4 +199,17 @@ func (ep *Endpoint) init() error {
 		}
 	}
 	return nil
+}
+
+// parseOrigin accepts a bare http(s) origin: scheme and host, no path.
+func parseOrigin(s string) (*url.URL, bool) {
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" {
+		return nil, false
+	}
+	return u, true
+}
+
+func isLowerHeaderName(h string) bool {
+	return h != "" && !strings.ContainsAny(h, " :") && h == strings.ToLower(h)
 }

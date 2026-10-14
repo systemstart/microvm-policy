@@ -20,6 +20,10 @@ type Proxy struct {
 	endpoints []*Endpoint
 	audit     *slog.Logger
 	transport http.RoundTripper
+	// upstreamProxy picks the proxy the tunnel leg chains through (nil: dial
+	// direct). Production uses http.ProxyFromEnvironment, which reads the
+	// environment once per process, so tests inject their own.
+	upstreamProxy func(*http.Request) (*url.URL, error)
 }
 
 // decide maps an allowlist verdict to this mode's action. Log mode is the
@@ -94,61 +98,90 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		upstream.Close()
+		_ = upstream.Close()
 		http.Error(w, "egress-proxy: connection cannot be hijacked", http.StatusInternalServerError)
 		return
 	}
 	client, buf, err := hj.Hijack()
 	if err != nil {
-		upstream.Close()
+		_ = upstream.Close()
 		return
 	}
-	buf.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
-	buf.Flush()
+	_, err = buf.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+	if err == nil {
+		err = buf.Flush()
+	}
+	if err != nil {
+		// The client hung up before the tunnel opened.
+		_ = upstream.Close()
+		_ = client.Close()
+		return
+	}
+	// Copy errors only mean one side hung up; either way the tunnel is over,
+	// and closing both ends is all there is to do.
 	go func() {
 		// buf's read side drains bytes the client sent early, then the conn.
-		io.Copy(upstream, buf)
-		upstream.Close()
+		_, _ = io.Copy(upstream, buf)
+		_ = upstream.Close()
 	}()
-	io.Copy(client, upstream)
-	client.Close()
+	_, _ = io.Copy(client, upstream)
+	_ = client.Close()
 }
 
 // dialContext opens the raw tunnel leg, chaining through the host's own
 // proxy environment when one is set, so corporate upstream proxies work.
 func (p *Proxy) dialContext(ctx context.Context, host string, port int) (net.Conn, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	proxyURL, err := http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "https", Host: addr}})
-	if err != nil || proxyURL == nil {
+	paddr := p.upstreamProxyAddr(addr)
+	if paddr == "" {
 		var d net.Dialer
-		return d.DialContext(ctx, "tcp", addr)
-	}
-	paddr := proxyURL.Host
-	if proxyURL.Port() == "" {
-		port := "80"
-		if proxyURL.Scheme == "https" {
-			port = "443"
+		conn, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("direct: %w", err)
 		}
-		paddr = net.JoinHostPort(proxyURL.Hostname(), port)
+		return conn, nil
 	}
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", paddr)
 	if err != nil {
 		return nil, fmt.Errorf("upstream proxy %s: %w", paddr, err)
 	}
-	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr)
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("upstream proxy %s: %w", paddr, err)
+	}
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("upstream proxy %s: %w", paddr, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("upstream proxy %s refused CONNECT %s: %s", paddr, addr, resp.Status)
 	}
 	return &bufferedConn{Conn: conn, r: br}, nil
+}
+
+// upstreamProxyAddr is the host:port of the proxy a tunnel to addr chains
+// through, or "" to dial direct.
+func (p *Proxy) upstreamProxyAddr(addr string) string {
+	if p.upstreamProxy == nil {
+		return ""
+	}
+	proxyURL, err := p.upstreamProxy(&http.Request{URL: &url.URL{Scheme: "https", Host: addr}})
+	if err != nil || proxyURL == nil {
+		return ""
+	}
+	if proxyURL.Port() != "" {
+		return proxyURL.Host
+	}
+	port := "80"
+	if proxyURL.Scheme == "https" {
+		port = "443"
+	}
+	return net.JoinHostPort(proxyURL.Hostname(), port)
 }
 
 // bufferedConn keeps bytes the upstream proxy's reader buffered past its
@@ -158,7 +191,9 @@ type bufferedConn struct {
 	r *bufio.Reader
 }
 
-func (c *bufferedConn) Read(b []byte) (int, error) { return c.r.Read(b) }
+func (c *bufferedConn) Read(b []byte) (int, error) {
+	return c.r.Read(b) //nolint:wrapcheck // io.Reader contract: io.EOF must arrive unwrapped
+}
 
 // --- reverse-proxied LLM endpoints ---
 
@@ -208,7 +243,7 @@ func (p *Proxy) serveEndpoint(ep *Endpoint, w http.ResponseWriter, r *http.Reque
 		if ep.Header == "authorization" {
 			out.Header.Set("Authorization", "Bearer "+ep.key)
 		} else {
-			out.Header.Set(http.CanonicalHeaderKey(ep.Header), ep.key)
+			out.Header.Set(ep.Header, ep.key) // Set canonicalises the name
 		}
 	}
 	// With no key held (OAuth mode) the client's own token passes through:
@@ -254,7 +289,7 @@ func (p *Proxy) roundTrip(w http.ResponseWriter, out *http.Request) {
 		http.Error(w, "egress-proxy: upstream error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	for _, h := range hopHeaders {
 		resp.Header.Del(h)
 	}
@@ -265,8 +300,10 @@ func (p *Proxy) roundTrip(w http.ResponseWriter, out *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	// The Claude API streams SSE: hand chunks on as they arrive.
-	io.Copy(&flushWriter{w: w}, resp.Body)
+	// The Claude API streams SSE: hand chunks on as they arrive. A copy error
+	// mid-stream means the client or upstream went away after the status was
+	// sent; there is no way left to report it.
+	_, _ = io.Copy(&flushWriter{w: w}, resp.Body)
 }
 
 type flushWriter struct{ w http.ResponseWriter }
@@ -276,7 +313,7 @@ func (f *flushWriter) Write(b []byte) (int, error) {
 	if fl, ok := f.w.(http.Flusher); ok {
 		fl.Flush()
 	}
-	return n, err
+	return n, err //nolint:wrapcheck // io.Writer passthrough: io.Copy inspects the error as-is
 }
 
 func splitHostPort(hostport string, def int) (string, int) {

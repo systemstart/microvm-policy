@@ -27,14 +27,14 @@ bad.example.org:notaport
 		{"anthropic.com", 443, true},
 		{"api.anthropic.com", 443, true},
 		{"API.Anthropic.COM.", 443, true},
-		{"anthropic.com", 80, false},    // bare entry grants 443 only
+		{"anthropic.com", 80, false}, // bare entry grants 443 only
 		{"notanthropic.com", 443, false},
 		{"evil-anthropic.com", 443, false}, // suffix match is label-bounded
 		{"example.net", 8443, true},
 		{"sub.example.net", 8443, true},
-		{"example.net", 443, false},     // :port entry grants that port only
+		{"example.net", 443, false}, // :port entry grants that port only
 		{"github.com", 443, true},
-		{"github.com", 22, true},        // two entries merge per host
+		{"github.com", 22, true}, // two entries merge per host
 		{"gist.github.com", 22, true},
 		{"pypi.org", 443, true},
 		{"bad.example.org", 443, false}, // garbled port must not widen
