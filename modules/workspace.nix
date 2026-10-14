@@ -5,13 +5,26 @@
 # that opens the directory, and .envrc runs under the host's direnv. A
 # sandboxed session that can write these persists code past the VM teardown.
 #
-# Straight denial breaks a workflow this project actively uses — asking the
-# agent to write a project skill or register an MCP server — so the
-# guard is opt-in (WORKSPACE_GUARD=1) until it has lived a release under real
-# use. It covers paths that exist at boot: it cannot make a file that is not
-# there yet read-only, so a repo without .mcp.json is not protected against
-# one being created. Defence in depth, not a boundary — the session contract
-# says which state a run has.
+# Two layers, both off by default:
+#
+#   - read-only binds at boot (`paths`, at the workspace root and, with
+#     `repoDepth`, in every repository found below it). They cover what exists
+#     at boot, including a repository's .git/config, and pin existing .git
+#     directories in place. They cannot cover what does not exist yet.
+#   - an AppArmor profile (`apparmor.*`) for the units the guest workload
+#     runs under: writes to the `denyPatterns` names are refused anywhere under
+#     the workspace, at every syscall, so a repository cloned or created after
+#     boot is covered the moment it exists — no watcher, no race. What it
+#     cannot cover by construction: a NEW repository's .git/config and a
+#     directory renamed into place as a new `.git` (git init and clone must be
+#     able to create both, and a name rule cannot tell git from anything else
+#     that writes the same path).
+#
+# Whether the guard is on is the state file's WORKSPACE_GUARD: opt-in ("1")
+# by default, because straight denial breaks a workflow some consumers use —
+# asking the agent to write a project skill or register an MCP server — or,
+# with `defaultOn`, opt-out ("0") for guests less trusted than the machines
+# the workspace reaches. Defence in depth, not a boundary.
 #
 # The same module carries WORKSPACE_MODE=ephemeral: the workspace
 # becomes a guest-side overlay whose writes never reach the host — the
@@ -29,6 +42,69 @@ let
   # /home/agent -> home-agent.mount. Correct for the simple, space-free paths
   # a microVM share uses; used only for ordering.
   mountUnit = p: (lib.replaceStrings [ "/" ] [ "-" ] (lib.removePrefix "/" p)) + ".mount";
+
+  gcfg = cfg.workspaceGuard;
+  aa = gcfg.apparmor;
+
+  # --- the AppArmor layer (workspaceGuard.apparmor) -------------------------
+  # Two variants of ONE profile name, chosen at boot by the guard decision:
+  # guarded (deny rules) or open (no deny rules). The confined units name the
+  # profile WITHOUT systemd's "-" prefix, so if neither variant could be
+  # loaded they refuse to start instead of running unconfined.
+  #
+  # Each pattern is a file or directory NAME that may sit anywhere under the
+  # workspace; `w` covers create, write, truncate, mkdir and rename onto the
+  # path, `l` hard links. Checked by the kernel at every syscall, so there is
+  # no window between a repository appearing and it being guarded.
+  aaRule = p: "  deny ${work}/{,**/}${p}{,/**} wl,";
+  aaProfile = variant: pkgs.writeText "${aa.profileName}-${variant}" (''
+    abi <abi/4.0>,
+    include <tunables/global>
+    profile ${aa.profileName} flags=(attach_disconnected, mediate_deleted) {
+      all,
+  '' + lib.optionalString (variant == "guarded") (lib.concatMapStringsSep "\n" aaRule aa.denyPatterns + "\n") + ''
+    }
+  '');
+  aaLoad = variant: ''
+    if ! ${pkgs.apparmor-parser}/bin/apparmor_parser -r ${aaProfile variant}; then
+      echo "workspace-guard: could not load the AppArmor profile ${aa.profileName} (${variant}); the units it confines will not start" >&2
+      exit 1
+    fi
+    echo "workspace-guard: AppArmor profile ${aa.profileName} loaded (${variant}) for: ${lib.concatStringsSep " " aa.units}"'';
+
+  # The guard decision. Without defaultOn/AppArmor this is byte-for-byte the
+  # original opt-in line.
+  guardOn = if gcfg.defaultOn then ''[ "$guard" != "0" ]'' else ''[ "$guard" = "1" ]'';
+  guardTest =
+    if !gcfg.defaultOn && !aa.enable then
+      ''[ "$guard" = "1" ] || exit 0''
+    else
+      ''
+        if ! ${guardOn}; then
+          ${lib.optionalString aa.enable (aaLoad "open")}
+          echo "workspace-guard: off (WORKSPACE_GUARD=''${guard:-unset})"
+          exit 0
+        fi
+        ${lib.optionalString aa.enable (aaLoad "guarded")}'';
+
+  # workspaceGuard.repoDepth: the same read-only binds for every repository
+  # below the workspace root, down to that depth, as found at boot. They pin
+  # what AppArmor cannot: a repository's .git/config (git must be able to
+  # create one in a new repository, so no name rule can forbid it), and they
+  # make `mv .git elsewhere` fail (EBUSY) for a repository that exists.
+  depthBlock = lib.optionalString (gcfg.repoDepth > 0) ''
+
+    for root in $(${pkgs.findutils}/bin/find ${work} -mindepth 2 -maxdepth ${toString (gcfg.repoDepth + 1)} \
+        \( -name node_modules -o -name vendor -o -name .direnv \) -prune -o -name .git -prune -print \
+        | ${pkgs.gnused}/bin/sed 's|/\.git$||'); do
+      for rel in ${lib.escapeShellArgs gcfg.paths}; do
+        p="$root/$rel"
+        [ -e "$p" ] || continue
+        mount --bind "$p" "$p"
+        mount -o remount,bind,ro "$p"
+        guarded="$guarded ''${root#${work}/}/$rel"
+      done
+    done'';
 
   # Shows what an ephemeral session changed: the overlay's upper layer holds
   # exactly the delta. Whiteouts (0:0 char devices) are deletions.
@@ -86,9 +162,69 @@ in
         entries that do not exist at boot are skipped.
       '';
     };
+    defaultOn = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Guard unless the state file says WORKSPACE_GUARD=0 (opt-out), instead
+        of only when it says WORKSPACE_GUARD=1 (opt-in, the default). For
+        guests that are less trusted than the machines the workspace syncs
+        to.
+      '';
+    };
+    repoDepth = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      description = ''
+        Also apply `paths` to every git repository found at boot up to this
+        many directories below the workspace root (node_modules, vendor and
+        .direnv are skipped). 0: the workspace root only.
+      '';
+    };
+    apparmor = {
+      enable = lib.mkEnableOption ''
+        the AppArmor layer of the guard: a profile that denies writes to
+        `denyPatterns` anywhere under the workspace, for every process of the
+        `units` it confines — including repositories cloned or created after
+        boot, with no race (the kernel checks each syscall). Enables AppArmor
+        and sets git's init.templateDir to an empty directory, so git init and
+        clone create no .git/hooks to be refused. A NEW repository's
+        .git/config, and a directory renamed into place as a new `.git`, are
+        outside its reach (git must be able to create both)'';
+      units = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "user@" "sshd" ];
+        description = "systemd services (attribute names under systemd.services) whose processes run under the profile.";
+      };
+      profileName = lib.mkOption {
+        type = lib.types.str;
+        default = "microvm-policy-workspace";
+        description = "Name of the AppArmor profile.";
+      };
+      denyPatterns = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [
+          ".git/hooks"
+          ".envrc"
+          ".mcp.json"
+          ".claude"
+          ".vscode"
+          ".githooks"
+          ".husky"
+          ".pre-commit-config.yaml"
+        ];
+        description = ''
+          File or directory names (relative paths allowed, e.g. .git/hooks)
+          that may not be created, written, renamed onto or hard-linked
+          anywhere under the workspace while the guard is on; a directory
+          entry covers everything below it.
+        '';
+      };
+    };
   };
 
-  config = {
+  config = lib.mkMerge [ {
     environment.systemPackages = [ vmWorkDiff ];
 
     systemd.services.work-ephemeral = {
@@ -150,7 +286,7 @@ in
         if [ -f ${cfg.stateFile} ]; then
           guard=$(${pkgs.gnused}/bin/sed -n 's/^WORKSPACE_GUARD=//p' ${cfg.stateFile} | tail -n1)
         fi
-        [ "$guard" = "1" ] || exit 0
+        ${guardTest}
 
         guarded=""
         for rel in ${lib.escapeShellArgs cfg.workspaceGuard.paths}; do
@@ -164,7 +300,7 @@ in
           mount --bind "$p" "$p"
           mount -o remount,bind,ro "$p"
           guarded="$guarded $rel"
-        done
+        done${depthBlock}
         if [ -n "$guarded" ]; then
           echo "workspace-guard: read-only:$guarded"
         else
@@ -172,5 +308,27 @@ in
         fi
       '';
     };
-  };
+  }
+
+  (lib.mkIf aa.enable {
+    security.apparmor.enable = true;
+    # With no template, git init/clone create no .git/hooks — which the
+    # profile refuses — and nothing else changes for them.
+    programs.git.enable = lib.mkDefault true;
+    programs.git.config.init.templateDir = lib.mkDefault "${pkgs.runCommand "git-template-empty" { } "mkdir $out"}";
+
+    systemd.services = lib.mkMerge [
+      {
+        # The confined units must not start before the profile is loaded,
+        # and logins (user@) neither.
+        workspace-guard.before = [ "systemd-user-sessions.service" ];
+      }
+      (lib.genAttrs aa.units (_: {
+        wants = [ "workspace-guard.service" ];
+        after = [ "workspace-guard.service" ];
+        serviceConfig.AppArmorProfile = aa.profileName;
+      }))
+    ];
+  })
+  ];
 }

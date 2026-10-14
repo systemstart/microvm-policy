@@ -78,6 +78,23 @@ microvmPolicy = {
 };
 ```
 
+The workspace guard has an opt-out shape for guests that are less trusted
+than the machines their workspace reaches:
+
+```nix
+microvmPolicy.workspaceGuard = {
+  defaultOn = true;                 # WORKSPACE_GUARD=0 opts out
+  repoDepth = 3;                    # boot-time binds in every repo found
+  apparmor = {                      # + a kernel rule for repos made later
+    enable = true;
+    units = [ "user@" "sshd" ];     # what the workload runs under
+  };
+};
+```
+
+`tests/workspace-guard.nix` runs it: existing and cloned-after-boot
+repositories, guarded and opted out, and the two documented limits.
+
 The state file's keys are the same either way. The boot-time seal self-test needs
 two controls: the proxy must answer (positive), and every seal probe — an
 address reachable only while the seal is absent, from `sealProbes` or

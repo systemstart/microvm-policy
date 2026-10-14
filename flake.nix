@@ -150,6 +150,9 @@
             inherit pkgs lib;
             egressProxy = self.packages.${system}.egress-proxy;
           };
+          # The workspace guard in its opt-out shape: repoDepth + AppArmor,
+          # existing and cloned-after-boot repositories, guarded vs opted out.
+          workspace-guard = import ./tests/workspace-guard.nix { inherit pkgs lib; };
         });
     };
 }
