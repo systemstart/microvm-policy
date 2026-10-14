@@ -69,6 +69,12 @@ in
 pkgs.testers.runNixOSTest {
   name = "egress-integration";
 
+  # A normal run takes well under a minute locally and ~2.5 in CI. The default
+  # hour only matters when a VM stalls before boot: the driver waits on its
+  # monitor/shell sockets with no timeout, so a stuck QEMU would hold the job
+  # for the full hour instead of failing fast.
+  globalTimeout = 600;
+
   nodes = {
     upstream = { ... }: {
       networking.firewall.enable = false;
