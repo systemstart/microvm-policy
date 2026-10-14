@@ -7,7 +7,43 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          determinate: false
+          diagnostic-endpoint: ''
+      - uses: cachix/cachix-action@v17
+        with:
+          name: systemstart
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          signingKey: ${{ secrets.CACHIX_SIGNING_KEY }}
+      - run: nix develop --command make lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          determinate: false
+          diagnostic-endpoint: ''
+      - uses: cachix/cachix-action@v17
+        with:
+          name: systemstart
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          signingKey: ${{ secrets.CACHIX_SIGNING_KEY }}
+      - run: nix develop --command make test
+
+  # Every flake check: the proxy package, the egress-report fixture test, and
+  # the 4-node egress-integration nixosTest, which drives the real proxy across
+  # VMs (the nix installer enables KVM on the hosted runners).
   check:
     runs-on: ubuntu-latest
     steps:
@@ -16,6 +52,70 @@ jobs:
         with:
           determinate: false
           diagnostic-endpoint: ''
-      # Proxy Go tests, egress-report, and the multi-node egress-integration
-      # nixosTest (needs KVM, which the hosted runners provide).
-      - run: nix flake check
+      - uses: cachix/cachix-action@v17
+        with:
+          name: systemstart
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          signingKey: ${{ secrets.CACHIX_SIGNING_KEY }}
+      - run: nix flake check -L
+
+  # `make release` only ever runs on a tag, so a broken cliff.toml would
+  # surface *after* the tag is pushed -- leaving a tag with no release.
+  # Exercise it on every push instead. This is deliberately not in `release`'s
+  # `needs`: `make release` runs git-cliff itself and aborts before publishing
+  # if it fails, so this is early warning, not a gate.
+  release-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # git-cliff needs the full history and the tags
+      - uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          determinate: false
+          diagnostic-endpoint: ''
+      - uses: cachix/cachix-action@v17
+        with:
+          name: systemstart
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          signingKey: ${{ secrets.CACHIX_SIGNING_KEY }}
+      # Renders the release notes for the latest tag. Catches a broken template
+      # or an unparseable cliff.toml; prints them to the log so a reviewer can
+      # see what a release would say.
+      - run: nix develop --command make release-notes
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          determinate: false
+          diagnostic-endpoint: ''
+      - uses: cachix/cachix-action@v17
+        with:
+          name: systemstart
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          signingKey: ${{ secrets.CACHIX_SIGNING_KEY }}
+      - run: nix develop --command make release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the release page has notes
+        # A release can publish with an empty body and still exit 0 (nix-oci
+        # v0.5.0 shipped that way). Assert the page instead of trusting the
+        # exit code.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          n=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq '.body | length')
+          echo "release body: $n characters"
+          if [ "$n" -lt 200 ]; then
+            echo "::error::release body is empty or truncated ($n chars) — the git-cliff notes did not reach the release page"
+            exit 1
+          fi

@@ -3,41 +3,73 @@
   "extends": [
     "config:recommended"
   ],
+  "schedule": [
+    "before 9am on monday"
+  ],
   "nix": {
     "enabled": true
   },
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["before 7am on monday"]
+    "schedule": [
+      "before 7am on monday"
+    ]
   },
   "packageRules": [
     {
-      "matchManagers": ["nix"],
-      "matchPackageNames": ["nixpkgs"],
-      "commitMessageExtra": "({{{newVersion}}})"
-    },
-    {
-      "matchManagers": ["nix"],
-      "matchPackageNames": ["go-overlay"],
-      "commitMessageExtra": "({{{newVersion}}})"
-    },
-    {
-      "matchManagers": ["gomod"],
+      "matchManagers": [
+        "gomod"
+      ],
       "commitMessagePrefix": "fix(deps):"
     },
     {
-      "matchManagers": ["custom.regex"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "commitMessagePrefix": "ci(deps):"
+    },
+    {
+      "matchManagers": [
+        "nix"
+      ],
+      "commitMessagePrefix": "chore(deps):"
+    },
+    {
+      "matchManagers": [
+        "nix"
+      ],
+      "matchPackageNames": [
+        "nixpkgs"
+      ],
+      "commitMessageExtra": "({{{newVersion}}})"
+    },
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
       "commitMessagePrefix": "build(deps):",
       "prBodyNotes": [
-        "If CI fails with ``attribute '\"X.Y.Z\"' missing``, the locked `go-overlay` input is older than the pin this PR proposes. Merge the lock-file-maintenance PR first, or run `nix flake update go-overlay` on this branch."
+        "If CI fails with ``attribute '\"X.Y.Z\"' missing``, the locked `go-overlay` input is older than the pin this PR proposes. Merge the lock-file-maintenance PR first \u2014 it is scheduled earlier (07:00 vs 09:00 Monday) for exactly this \u2014 or run `nix flake update go-overlay` on this branch."
       ]
+    },
+    {
+      "matchManagers": [
+        "nix"
+      ],
+      "matchPackageNames": [
+        "go-overlay"
+      ],
+      "commitMessagePrefix": "chore(deps):",
+      "commitMessageExtra": "({{{newVersion}}})"
     }
   ],
   "customManagers": [
     {
       "customType": "regex",
-      "description": "The Go release pinned in flake.nix and provided by go-overlay.",
-      "managerFilePatterns": ["/^flake\\.nix$/"],
+      "description": "The Go release pinned in flake.nix and provided by go-overlay (builds the egress proxy). Proposed as its own PR rather than riding along with a nixpkgs bump.",
+      "managerFilePatterns": [
+        "/^flake\\.nix$/"
+      ],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*goVersion\\s*=\\s*\"(?<currentValue>[^\"]+)\""
       ],

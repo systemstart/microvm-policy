@@ -1,0 +1,22 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - dupl
+    - unused
+    - gosec
+    - wrapcheck
+    - cyclop
+  settings:
+    gosec:
+      excludes:
+        - G304 # file path from variable — the config, allowlist and audit-log paths are the operator's own config
+
+formatters:
+  enable:
+    - gofumpt

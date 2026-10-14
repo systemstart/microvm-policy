@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Runs the linter before a commit is created. Install with `make hooks` (sets
+# core.hooksPath to this directory). Bypass a single commit with `--no-verify`.
+set -euo pipefail
+
+# Always lint through the flake dev shell so golangci-lint is the version pinned
+# in flake.nix (matching CI and .golangci.yaml), not whatever happens to be on
+# PATH. This works whether or not a dev shell is already active.
+if ! command -v nix >/dev/null 2>&1; then
+	echo "pre-commit: nix not found; the linter is provided by the flake dev shell" >&2
+	exit 1
+fi
+
+exec nix develop --command make lint

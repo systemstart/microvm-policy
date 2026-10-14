@@ -61,6 +61,32 @@ summariser against a synthesised capture, and a multi-node `nixosTest`
 strip/inject, path allowlist, `CONNECT` allow/deny with port grants, and
 upstream-proxy chaining — across four VMs.
 
+## Development
+
+```sh
+nix develop          # pinned Go (go-overlay), golangci-lint, gofumpt, release tooling
+make hooks           # once per clone: lint on commit, reject unsigned commits on push
+make lint test build # the Go gates CI runs; `make test` enforces 80% coverage
+make check           # nix flake check, including the nixosTests (needs KVM)
+make diff-closures   # what a flake.lock bump actually changes
+```
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
+the type decides the next version and the release-notes section.
+
+## Releasing
+
+```sh
+make release-tag-preview   # the version gsemver would cut
+make release-tag           # write VERSION, commit, signed tag, push
+```
+
+The tag push runs CI's `release` job: `make release` renders the notes with
+git-cliff (`cliff.toml`) and publishes the GitHub release. `make
+release-notes` previews them. `VERSION` is the single source of truth; the
+flake reads it for the package version and stamps it into `egress-proxy
+-version`.
+
 ## Design
 
 The rationale for each mechanism is in the header comment of the file that

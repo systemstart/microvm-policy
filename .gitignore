@@ -1,3 +1,7 @@
-result
-result-*
-.direnv
+.direnv/
+.envrc
+
+/result
+/result-*
+
+coverage.out
