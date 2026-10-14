@@ -17,7 +17,7 @@ hooks:
 	@echo "installed git hooks from .githooks"
 
 build:
-	cd $(GO_DIR) && $(GO) build ./...
+	cd $(GO_DIR) && $(GO) build -o /dev/null ./...
 
 # Runs the proxy's unit tests with coverage and fails if total coverage drops
 # below COVERAGE_THRESHOLD. What unit tests cannot reach -- main(), and the

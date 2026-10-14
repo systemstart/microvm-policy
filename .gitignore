@@ -5,3 +5,6 @@
 /result-*
 
 coverage.out
+
+# `go build` in the proxy module writes its binary here.
+/proxy/egress-proxy
