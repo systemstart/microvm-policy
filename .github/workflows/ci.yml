@@ -65,6 +65,22 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           signingKey: ${{ secrets.CACHIX_SIGNING_KEY }}
       - run: nix flake check -L
+      # ...but push the check RESULTS. Each nixosTest result is a small log
+      # directory with no references, so this uploads only those, not the VMs
+      # behind them. A later run with the same inputs — the release job's
+      # check on the tag, a re-run — then substitutes every unchanged test
+      # instead of booting all its VMs again (with nothing pushed, v0.3.0's
+      # check ran every VM test from scratch: 20+ minutes).
+      - name: Push the check results to Cachix
+        if: github.event_name == 'push'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_SIGNING_KEY: ${{ secrets.CACHIX_SIGNING_KEY }}
+        run: |
+          nix eval --json .#checks.x86_64-linux --apply builtins.attrNames \
+            | jq -r '.[] | ".#checks.x86_64-linux.\(.)"' \
+            | xargs nix build --no-link --print-out-paths \
+            | cachix push systemstart
 
   # `make release` only ever runs on a tag, so a broken cliff.toml would
   # surface *after* the tag is pushed -- leaving a tag with no release.
