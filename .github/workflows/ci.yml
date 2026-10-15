@@ -46,7 +46,11 @@ jobs:
   # VMs (the nix installer enables KVM on the hosted runners).
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Uncached, the nixosTests (11 VMs) take over 30 minutes on a hosted
+    # runner: v0.3.0's release check was cancelled at 30 and the release
+    # skipped. Cached results (pushed below) make reruns quick; the limit must
+    # still hold an uncached run.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v23
