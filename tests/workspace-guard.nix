@@ -11,7 +11,8 @@
 #
 # Asserted on `guarded`:
 #   - the user manager runs under the profile (enforce);
-#   - existing repository: a hook, its .git/config, its .envrc refused;
+#   - existing repository: a hook, its .git/config, .envrc, .githooks/ and
+#     .claude/settings.json refused, the last three also by read-only binds;
 #   - repository cloned after boot: clone and an ordinary commit work; a
 #     hook (write, mkdir, rename onto, hard link, symlink), .envrc, .mcp.json,
 #     .claude/commands/*, a directory renamed to .claude — refused;
@@ -63,6 +64,9 @@ let
         echo '#!/bin/sh' > /ws/team/old/.git/hooks/pre-commit.sample
         echo 'use flake' > /ws/team/old/.envrc
         echo '{}' > /ws/team/old/.mcp.json
+        install -d /ws/team/old/.githooks /ws/team/old/.claude
+        echo '#!/bin/sh' > /ws/team/old/.githooks/pre-push
+        echo '{}' > /ws/team/old/.claude/settings.json
         chown -R agent:users /ws
         git init -q -b main /srv/src
         git -C /srv/src -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
@@ -111,6 +115,12 @@ pkgs.testers.runNixOSTest {
         refused(guarded, "git -C team/old config core.fsmonitor evil")
         refused(guarded, "echo evil > team/old/.envrc")
         refused(guarded, "echo evil > team/old/.mcp.json")
+        refused(guarded, "echo evil > team/old/.githooks/pre-push")
+        refused(guarded, "echo evil > team/old/.claude/settings.json")
+        # Pinned by the boot-time binds too, not only by AppArmor: a consumer
+        # without the AppArmor layer has only these.
+        for p in (".git/config", ".githooks", ".claude/settings.json"):
+            guarded.succeed(f"findmnt -no OPTIONS /ws/team/old/{p} | grep -qw ro")
 
     with subtest("guarded: repository cloned after boot"):
         ok(guarded, "git clone -q /srv/src team/new")

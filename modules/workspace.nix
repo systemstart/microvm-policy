@@ -1,9 +1,11 @@
 # Guest-side guard for workspace paths whose contents execute on the HOST
 # later, which is why the VM boundary does not cover them: .git/hooks and
-# .git/config run on the next host-side git invocation, .claude/commands,
-# .claude/agents and .mcp.json are picked up by the next unsandboxed session
-# that opens the directory, and .envrc runs under the host's direnv. A
-# sandboxed session that can write these persists code past the VM teardown.
+# .git/config run on the next host-side git invocation (so do .githooks/ and
+# .husky/ wherever core.hooksPath points there), .claude/{commands,agents},
+# .claude/settings*.json hooks and .mcp.json are picked up by the next
+# unsandboxed session that opens the directory, .vscode/ tasks by the editor,
+# and .envrc runs under the host's direnv. A sandboxed session that can
+# write these persists code past the VM teardown.
 #
 # Two layers, both off by default:
 #
@@ -154,7 +156,15 @@ in
         ".mcp.json"
         ".claude/commands"
         ".claude/agents"
+        ".claude/settings.json"
+        ".claude/settings.local.json"
         ".envrc"
+        # core.hooksPath targets and hook managers: tracked, so they exist at
+        # boot, and the host runs them on its next commit or push.
+        ".githooks"
+        ".husky"
+        ".pre-commit-config.yaml"
+        ".vscode"
       ];
       description = ''
         Paths under the workspace made read-only inside the guest when the
