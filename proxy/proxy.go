@@ -266,8 +266,18 @@ func (p *Proxy) serveEndpoint(ep *Endpoint, w http.ResponseWriter, r *http.Reque
 	p.roundTrip(w, out)
 }
 
+// pathAllowed grants "/v1/messages" and everything below it, but
+// "/v1/messages$" only that exact path: a subtree can hold endpoints the
+// grant never meant, such as /v1/messages/batches, which stores results
+// for later retrieval.
 func pathAllowed(allowed []string, rest string) bool {
 	for _, a := range allowed {
+		if exact, ok := strings.CutSuffix(a, "$"); ok {
+			if rest == exact {
+				return true
+			}
+			continue
+		}
 		if rest == a || strings.HasPrefix(rest, a+"/") {
 			return true
 		}

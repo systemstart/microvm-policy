@@ -181,6 +181,26 @@ func TestEndpointPathAllowlist(t *testing.T) {
 	})
 }
 
+func TestEndpointExactPathGrant(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer backend.Close()
+	ep := anthropicEndpoint(t, backend.URL)
+	ep.AllowedPaths = []string{"/v1/messages$", "/v1/messages/count_tokens$"}
+	ts, _ := newTestProxy(t, "enforce", "", []*Endpoint{ep})
+	for p, want := range map[string]int{
+		"/v1/messages":                    http.StatusOK,
+		"/v1/messages/count_tokens":       http.StatusOK,
+		"/v1/messages/batches":            http.StatusForbidden,
+		"/v1/messages/batches/b1/results": http.StatusForbidden,
+		"/v1/messages/count_tokens/x":     http.StatusForbidden,
+		"/v1/messages$":                   http.StatusForbidden,
+	} {
+		if status, _ := get(t, ts.URL+"/anthropic"+p); status != want {
+			t.Errorf("%s: status = %d, want %d", p, status, want)
+		}
+	}
+}
+
 // rawRequest writes req verbatim to the server at serverURL and reads one
 // response. The connection stays open for the test (a CONNECT tunnel rides on
 // it) and is closed at cleanup.
@@ -415,6 +435,13 @@ func TestEndpointInitRejects(t *testing.T) {
 		"uppercase header":     func(ep *Endpoint) { ep.Header = "X-Api-Key" },
 		"header with colon":    func(ep *Endpoint) { ep.Header = "x-api-key:" },
 		"no allowed paths":     func(ep *Endpoint) { ep.AllowedPaths = nil },
+		"relative path":        func(ep *Endpoint) { ep.AllowedPaths = []string{"v1/messages"} },
+		"root path":            func(ep *Endpoint) { ep.AllowedPaths = []string{"/"} },
+		"exact root path":      func(ep *Endpoint) { ep.AllowedPaths = []string{"/$"} },
+		"trailing slash":       func(ep *Endpoint) { ep.AllowedPaths = []string{"/v1/messages/"} },
+		"dot segment":          func(ep *Endpoint) { ep.AllowedPaths = []string{"/v1/../files"} },
+		"inner dollar":         func(ep *Endpoint) { ep.AllowedPaths = []string{"/v1$/messages"} },
+		"double dollar":        func(ep *Endpoint) { ep.AllowedPaths = []string{"/v1/messages$$"} },
 		"unset credential env": func(ep *Endpoint) { ep.KeyEnv = "EGRESS_TEST_UNSET" },
 	}
 	for name, mutate := range cases {
@@ -429,6 +456,11 @@ func TestEndpointInitRejects(t *testing.T) {
 	ep := valid()
 	if err := ep.init(); err != nil {
 		t.Fatalf("valid endpoint refused: %v", err)
+	}
+	ep = valid()
+	ep.AllowedPaths = []string{"/v1/messages$", "/v1/models"}
+	if err := ep.init(); err != nil {
+		t.Fatalf("exact and subtree grants refused: %v", err)
 	}
 }
 

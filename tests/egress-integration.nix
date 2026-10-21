@@ -43,7 +43,7 @@ let
       upstream = "http://upstream";
       keyEnv = "ANTHROPIC_API_KEY";
       header = "x-api-key";
-      allowedPaths = [ "/v1/messages" ];
+      allowedPaths = [ "/v1/messages$" ];
     }];
   });
 
@@ -192,14 +192,16 @@ pkgs.testers.runNixOSTest {
     assert "attacker-planted" not in seen, \
         f"planted credential was not stripped: {seen!r}"
 
-    # --- reverse-proxy leg: denied path is refused by the proxy, never reaches
-    #     upstream ---
-    code = client.succeed(
-        "curl -s -o /dev/null -w '%{http_code}' http://proxy:3128/anthropic/v1/files"
-    )
-    assert code == "403", f"denied endpoint path returned {code}, want 403"
-    assert "/v1/files" not in upstream.succeed("cat /tmp/seen"), \
-        "denied path leaked to upstream"
+    # --- reverse-proxy leg: denied paths are refused by the proxy, never
+    #     reach upstream — off-list, and below an exact ("$") grant ---
+    for denied in ["/v1/files", "/v1/messages/batches"]:
+        code = client.succeed(
+            "curl -s -o /dev/null -w '%{http_code}' "
+            f"http://proxy:3128/anthropic{denied}"
+        )
+        assert code == "403", f"denied endpoint path {denied} returned {code}, want 403"
+        assert denied not in upstream.succeed("cat /tmp/seen"), \
+            f"denied path {denied} leaked to upstream"
 
     # --- CONNECT leg: allowed host:port tunnels; the off-list port is denied ---
     # curl exits non-zero on both (TLS fails over the plain tunnel; 403 on the

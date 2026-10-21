@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 )
@@ -61,11 +62,12 @@ type Endpoint struct {
 	// Header names the credential header: "x-api-key",
 	// "x-goog-api-key", … — or "authorization", sent as a Bearer token.
 	Header string `json:"header"`
-	// AllowedPaths are the upstream path prefixes permitted once Prefix is
-	// stripped. Everything else is denied: every endpoint is an attack
-	// surface, and even with our own key the API is an exfiltration channel
-	// (upload to a files endpoint and the data is gone) — "allowlists
-	// function as capability grants."
+	// AllowedPaths are the upstream paths permitted once Prefix is stripped:
+	// "/v1/messages" covers that path and everything below it,
+	// "/v1/messages$" only the exact path. Everything else is denied: every
+	// endpoint is an attack surface, and even with our own key the API is an
+	// exfiltration channel (upload to a files endpoint and the data is gone)
+	// — "allowlists function as capability grants."
 	AllowedPaths []string `json:"allowedPaths"`
 
 	upstreamURL *url.URL
@@ -207,8 +209,8 @@ func (ep *Endpoint) init() error {
 	if !isLowerHeaderName(ep.Header) {
 		return fmt.Errorf("header must be a lowercase header name like \"x-api-key\" or \"authorization\", got %q", ep.Header)
 	}
-	if len(ep.AllowedPaths) == 0 {
-		return fmt.Errorf("allowedPaths must not be empty — an endpoint with no reachable path is a config error, not a default")
+	if err := validateAllowedPaths(ep.AllowedPaths); err != nil {
+		return err
 	}
 	if err := ep.initKeyFile(); err != nil {
 		return err
@@ -219,6 +221,23 @@ func (ep *Endpoint) init() error {
 			// A proxy that silently stops injecting is the quiet failure
 			// the policy track's rule 2 forbids: fail the launch instead.
 			return fmt.Errorf("credential env %s is empty — unset keyEnv explicitly for OAuth mode", ep.KeyEnv)
+		}
+	}
+	return nil
+}
+
+func validateAllowedPaths(allowed []string) error {
+	if len(allowed) == 0 {
+		return fmt.Errorf("allowedPaths must not be empty — an endpoint with no reachable path is a config error, not a default")
+	}
+	for _, a := range allowed {
+		// Requests are matched after path.Clean, so an unclean entry (a
+		// trailing slash, a dot segment) could never match: refuse it rather
+		// than ship a grant that silently grants nothing — or, for "/",
+		// everything.
+		p := strings.TrimSuffix(a, "$")
+		if !strings.HasPrefix(p, "/") || p == "/" || path.Clean(p) != p || strings.Contains(p, "$") {
+			return fmt.Errorf("allowedPaths entry %q must be a clean absolute path below the root, optionally ending in $ for an exact match", a)
 		}
 	}
 	return nil
