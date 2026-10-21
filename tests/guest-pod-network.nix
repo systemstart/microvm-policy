@@ -129,10 +129,18 @@ pkgs.testers.runNixOSTest {
       proxyIP = nodes.proxy.networking.primaryIPAddress;
     in
     ''
-      start_all()
+      # The guests' seal self-test runs at THEIR boot and gives the proxy
+      # sealProxyWait (5s) to answer. With start_all() the proxy VM could
+      # still be booting then, and an unsealed guest reported INCONCLUSIVE
+      # instead of FAILED (CI, 2026-10-21): the race, not the guest, failed.
+      # So the guests boot only once the proxy listens.
+      upstream.start()
+      proxy.start()
       upstream.wait_for_open_port(80)
       upstream.wait_for_open_port(22)
       proxy.wait_for_open_port(3128)
+      for machine in (guest, unsealed, noproxy):
+          machine.start()
       guest.wait_for_unit("egress-seal.service")
 
       with subtest("unsealed guest: the self-test FAILS the unit"):
