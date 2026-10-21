@@ -236,14 +236,27 @@ func (p *Proxy) serveEndpoint(ep *Endpoint, w http.ResponseWriter, r *http.Reque
 	}
 	// Proxy-directed auth never travels upstream in either mode.
 	out.Header.Del("Proxy-Authorization")
-	if ep.key != "" {
+	key := ep.key
+	if ep.KeyFile != "" {
+		// ⛔ Refused in BOTH modes, and never sent on without a credential:
+		// with no usable file there is nothing to inject, and falling through
+		// to passthrough would carry the client's own token instead.
+		k, err := ep.fileKey()
+		if err != nil {
+			p.log("api", ep.upstreamURL.Host, 0, rest, "deny")
+			http.Error(w, fmt.Sprintf("egress-proxy: %s: credential unavailable: %v", ep.Prefix, err), http.StatusServiceUnavailable)
+			return
+		}
+		key = k
+	}
+	if key != "" {
 		for _, h := range credentialHeaders {
 			out.Header.Del(h)
 		}
 		if ep.Header == "authorization" {
-			out.Header.Set("Authorization", "Bearer "+ep.key)
+			out.Header.Set("Authorization", "Bearer "+key)
 		} else {
-			out.Header.Set(ep.Header, ep.key) // Set canonicalises the name
+			out.Header.Set(ep.Header, key) // Set canonicalises the name
 		}
 	}
 	// With no key held (OAuth mode) the client's own token passes through:

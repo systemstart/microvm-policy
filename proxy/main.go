@@ -48,6 +48,16 @@ type Endpoint struct {
 	// passthrough (OAuth mode): the client's own token crosses untouched,
 	// because the proxy cannot hold a credential the client mints itself.
 	KeyEnv string `json:"keyEnv"`
+	// KeyFile is the other way to hold a credential: an absolute path to a
+	// JSON file {"value": "…", "expires_at": "<RFC 3339>"}, re-read on every
+	// request, for a credential that expires and is renewed by someone else
+	// (a refresher beside the proxy). Exclusive with KeyEnv.
+	//
+	// ⛔ Missing, unreadable, malformed, empty or past expires_at: the
+	// request is refused (503), in both modes. It never falls back to
+	// passthrough, which would send the client's own token, nor to a
+	// credential it held before.
+	KeyFile string `json:"keyFile"`
 	// Header names the credential header: "x-api-key",
 	// "x-goog-api-key", … — or "authorization", sent as a Bearer token.
 	Header string `json:"header"`
@@ -60,6 +70,8 @@ type Endpoint struct {
 
 	upstreamURL *url.URL
 	key         string
+	// now is the clock KeyFile's expiry is checked against.
+	now func() time.Time
 }
 
 // version is stamped at build time from ./VERSION (-X main.version=…).
@@ -197,6 +209,9 @@ func (ep *Endpoint) init() error {
 	}
 	if len(ep.AllowedPaths) == 0 {
 		return fmt.Errorf("allowedPaths must not be empty — an endpoint with no reachable path is a config error, not a default")
+	}
+	if err := ep.initKeyFile(); err != nil {
+		return err
 	}
 	if ep.KeyEnv != "" {
 		ep.key = os.Getenv(ep.KeyEnv)

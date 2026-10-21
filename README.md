@@ -17,7 +17,9 @@ needs — stays in the consumer.
 - **`proxy/`** — the egress proxy (Go, standard library only). An opaque
   `CONNECT` forward proxy with a host\:port allowlist, a reverse-proxy leg for
   LLM endpoints that strips client-supplied credentials and injects the key
-  held on the host (path-allowlisted, no TLS interception), upstream-proxy
+  held on the host (path-allowlisted, no TLS interception) — from an
+  environment variable, or from a file a refresher renews (`keyFile`, with an
+  `expires_at`; a missing or expired file refuses the request), upstream-proxy
   chaining, and a one-line-per-decision JSONL audit log. Modes: `enforce`
   (deny off-allowlist) and `log` (allow but audit as `would_deny` — the
   "shadow" rung).
