@@ -30,7 +30,7 @@
       # maintenance PR first (scheduled earlier for that reason), or run
       # `nix flake update go-overlay` in the same branch.
       # renovate: datasource=golang-version depName=go
-      goVersion = "1.27.2";
+      goVersion = "1.27.3";
 
       # Scoped deliberately: the overlay is applied to a throwaway nixpkgs
       # instance used only to pull the toolchain out, so nothing else in this
